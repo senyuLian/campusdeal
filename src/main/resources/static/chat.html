@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CampusDeal 智能助手</title>
+    <link rel="stylesheet" href="/css/chat.css">
+</head>
+<body>
+    <div id="chat-container">
+        <div id="chat-header">
+            <h3>🤖 CampusDeal 智能助手</h3>
+            <span id="header-right">
+                <span id="session-badge">新会话</span>
+                <button id="logout-btn" onclick="logout()" title="退出登录">退出</button>
+            </span>
+        </div>
+
+        <div id="login-panel">
+            <h2>👋 欢迎使用 CampusDeal 智能助手</h2>
+            <p class="login-tip">使用手机号 + 验证码登录后，即可开始对话</p>
+            <div class="login-row">
+                <input id="login-phone" type="tel" placeholder="请输入手机号" maxlength="11">
+                <button id="code-btn" onclick="sendCode()">获取验证码</button>
+            </div>
+            <div class="login-row">
+                <input id="login-code" type="text" placeholder="请输入验证码" maxlength="6">
+                <button id="login-btn" onclick="doLogin()">登录</button>
+            </div>
+            <p class="login-msg" id="login-msg"></p>
+            <p class="login-hint">本地开发环境：验证码发送为模拟短信，请通过 Redis 查看 <code>login:code:{手机号}</code>（TTL 2 分钟）</p>
+        </div>
+
+        <div id="chat-messages">
+            <!-- 消息动态插入 -->
+        </div>
+
+        <div id="chat-input-area">
+            <textarea id="chat-input" placeholder="输入您的问题..." rows="2" maxlength="2000"></textarea>
+            <button id="send-btn" onclick="sendMessage()">发送</button>
+        </div>
+    </div>
+
+    <script src="/js/chat.js"></script>
+</body>
+</html>

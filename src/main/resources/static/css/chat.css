@@ -1,0 +1,284 @@
+/* CampusDeal 智能助手聊天界面 */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body { background: #f5f6fa; }
+
+#chat-container {
+    max-width: 800px;
+    margin: 0 auto;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    background: #fff;
+    box-shadow: 0 0 24px rgba(0,0,0,0.08);
+}
+
+#chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: #1976d2;
+    color: #fff;
+}
+
+#chat-header h3 { font-size: 16px; font-weight: 600; }
+
+#header-right { display: flex; align-items: center; gap: 8px; }
+
+#session-badge {
+    font-size: 12px;
+    background: rgba(255,255,255,0.2);
+    padding: 4px 10px;
+    border-radius: 12px;
+}
+
+#logout-btn {
+    font-size: 12px;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.4);
+    padding: 3px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+}
+
+#logout-btn:hover { background: rgba(255,255,255,0.3); }
+
+.hidden { display: none !important; }
+
+/* 登录面板 */
+#login-panel {
+    padding: 28px 32px;
+    border-bottom: 1px solid #eee;
+    background: #fafbfd;
+}
+
+#login-panel h2 { font-size: 18px; margin-bottom: 6px; color: #333; }
+
+#login-panel .login-tip { font-size: 13px; color: #888; margin-bottom: 16px; }
+
+.login-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.login-row input {
+    flex: 1;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    outline: none;
+}
+
+.login-row input:focus { border-color: #1976d2; }
+
+.login-row button {
+    background: #1976d2;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.login-row button:disabled { background: #b0bec5; cursor: not-allowed; }
+
+#login-btn { background: #2e7d32; }
+
+.login-msg { font-size: 13px; color: #2e7d32; margin-top: 6px; }
+
+.login-msg.error { color: #c62828; }
+
+.login-hint {
+    font-size: 12px;
+    color: #aaa;
+    margin-top: 12px;
+    line-height: 1.5;
+}
+
+.login-hint code {
+    background: #eee;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: Consolas, Menlo, monospace;
+}
+
+#chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    scroll-behavior: smooth;
+}
+
+.message {
+    margin-bottom: 16px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.message.user { flex-direction: row-reverse; }
+
+.message .avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+}
+
+.message.user .avatar { background: #e3f2fd; }
+.message.assistant .avatar { background: #f3e5f5; }
+
+.message-content {
+    max-width: 70%;
+    padding: 12px 16px;
+    border-radius: 12px;
+    line-height: 1.6;
+    word-break: break-word;
+    font-size: 14px;
+}
+
+.message.user .message-content { background: #1976d2; color: #fff; border-top-right-radius: 2px; }
+.message.assistant .message-content { background: #f5f5f5; color: #333; border-top-left-radius: 2px; }
+
+.message-content p { margin: 4px 0; }
+.message-content code {
+    background: #eee;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: Consolas, Menlo, monospace;
+}
+.message-content pre {
+    background: #2d2d2d;
+    color: #e8e8e8;
+    padding: 10px 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 6px 0;
+}
+.message-content pre code { background: transparent; color: inherit; padding: 0; }
+
+/* 思考中指示器 */
+.thinking-indicator {
+    color: #999;
+    font-style: italic;
+    padding: 8px 12px;
+    font-size: 13px;
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* 工具调用卡片 */
+.tool-call-card {
+    margin: 10px 0;
+    padding: 10px 14px;
+    background: #fff9c4;
+    border-left: 4px solid #ffc107;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.tool-call-card .tool-header { font-weight: 600; }
+.tool-call-card .tool-args { color: #666; font-family: monospace; margin-top: 2px; }
+.tool-call-card .tool-result.success { color: #2e7d32; margin-top: 4px; }
+.tool-call-card .tool-result.error { color: #c62828; margin-top: 4px; }
+
+/* 确认对话框 */
+.confirm-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.confirm-dialog {
+    background: white;
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 400px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+
+.confirm-dialog p { margin-bottom: 8px; font-size: 14px; line-height: 1.6; }
+
+.confirm-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+    justify-content: flex-end;
+}
+
+.btn-confirm {
+    background: #1976d2;
+    color: white;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.btn-cancel {
+    background: #e0e0e0;
+    color: #333;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+#chat-input-area {
+    display: flex;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid #eee;
+    align-items: flex-end;
+}
+
+#chat-input {
+    flex: 1;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 14px;
+    resize: none;
+    outline: none;
+    font-family: inherit;
+    line-height: 1.5;
+}
+
+#chat-input:focus { border-color: #1976d2; }
+
+#send-btn {
+    background: #1976d2;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 22px;
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+#send-btn:disabled { background: #b0bec5; cursor: not-allowed; }
+
+.error-text { color: #c62828; font-size: 13px; }

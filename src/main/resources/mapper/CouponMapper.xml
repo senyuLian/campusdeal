@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.campusdeal.mapper.CouponMapper">
+
+    <select id="queryCouponOfMerchant" resultType="com.campusdeal.entity.Coupon" parameterType="java.lang.Long">
+        SELECT
+            v.`id`, v.`shop_id`, v.`title`, v.`sub_title`, v.`rules`, v.`pay_value`,
+            v.`actual_value`, v.`type`, sv.`stock` , sv.begin_time , sv.end_time
+        FROM tb_voucher v
+                 LEFT JOIN  tb_seckill_voucher sv ON v.id = sv.voucher_id
+        WHERE v.shop_id = #{shopId} AND v.status = 1
+    </select>
+
+    <select id="queryFlashDealList" resultType="com.campusdeal.entity.Coupon">
+        SELECT
+            v.`id`, v.`shop_id`, v.`title`, v.`sub_title`, v.`rules`, v.`pay_value`,
+            v.`actual_value`, v.`type`, v.`status`,
+            sv.`stock`, sv.begin_time, sv.end_time,
+            s.`name` AS shop_name, s.`images` AS shop_images
+        FROM tb_voucher v
+            INNER JOIN tb_seckill_voucher sv ON v.id = sv.voucher_id
+            LEFT JOIN tb_shop s ON s.id = v.shop_id
+        WHERE v.type = 1 AND v.status = 1
+          AND sv.stock &gt; 0
+          AND sv.begin_time &lt;= NOW() AND sv.end_time &gt;= NOW()
+        ORDER BY sv.end_time ASC, v.id DESC
+    </select>
+
+    <select id="queryAllCoupons" resultType="com.campusdeal.entity.Coupon">
+        SELECT
+            v.`id`, v.`shop_id`, v.`title`, v.`sub_title`, v.`rules`, v.`pay_value`,
+            v.`actual_value`, v.`type`, v.`status`,
+            sv.`stock`, sv.begin_time, sv.end_time,
+            s.`name` AS shop_name, s.`images` AS shop_images
+        FROM tb_voucher v
+            LEFT JOIN tb_seckill_voucher sv ON v.id = sv.voucher_id
+            LEFT JOIN tb_shop s ON s.id = v.shop_id
+        WHERE v.status = 1
+        ORDER BY v.type ASC, v.id DESC
+    </select>
+</mapper>

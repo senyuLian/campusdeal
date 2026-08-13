@@ -1,0 +1,109 @@
+server:
+  port: 8081
+spring:
+  flyway:
+    enabled: false  # 如果你不需要数据库迁移
+  liquibase:
+    enabled: false
+  application:
+    name: campus-deal
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/campusdeal?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+  data:
+    redis:
+        host: localhost
+        port: 6379
+        password: 123456
+        lettuce:
+          pool:
+            max-active: 10
+            max-idle: 10
+            min-idle: 1
+#            time-between-eviction-runs: 10s
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        # P0-1 修复：Kafka 不可用时元数据获取最多阻塞 3s（默认 60s），避免秒杀接口长时间卡死
+        max.block.ms: 3000
+        retries: 0
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      properties:
+        spring.json.trusted.packages: com.campusdeal.mq
+    listener:
+      ack-mode: manual
+      # 无 Kafka 环境时禁止消费者容器自动启动，避免启动报错；接入 Kafka 后改为 true
+      auto-startup: false
+  jackson:
+    default-property-inclusion: non_null # JSON处理时忽略非空字段
+mybatis-plus:
+  type-aliases-package: com.campusdeal.entity # 别名扫描包
+
+  ddl-runner:
+    enabled: false
+
+# ===== Phase 2: 多级缓存与布隆过滤器 =====
+campusdeal:
+  cache:
+    stock-ttl-seconds: 1        # 秒杀库存标记缓存 TTL
+    stock-max-size: 10000
+    merchant-ttl-seconds: 30    # 商户热点数据缓存 TTL
+    merchant-max-size: 1000
+  bloom:
+    expected-insertions: 10000  # 预期插入元素数
+    fpp: 0.01                   # 误判率 1%
+    rebuild-interval-seconds: 300  # 定时重建周期（秒）
+  kafka:
+    topic:
+      flash-deal-orders: flash-deal-orders   # 秒杀订单 Topic
+  canal:
+    host: localhost
+    port: 11111
+    destination: example
+  # ===== Phase 3 (Module 04): AI Agent =====
+  # DeepSeek API Key（P1-5：移除明文默认值；生产通过环境变量 CAMPUSDEAL_DEEPSEEK_API_KEY 注入，留空时调用 LLM 会提示未配置）
+  deepseek:
+    api-key: ${CAMPUSDEAL_DEEPSEEK_API_KEY:}
+    base-url: ${CAMPUSDEAL_DEEPSEEK_BASE_URL:https://api.deepseek.com/v1}
+    # ===== Phase 3 (Module 05): RAG 检索 =====
+    embedding-model: ${CAMPUSDEAL_DEEPSEEK_EMBEDDING_MODEL:deepseek-embedding}  # DeepSeek Embedding 模型（1024 维）
+    embedding-dimension: ${CAMPUSDEAL_DEEPSEEK_EMBEDDING_DIMENSION:1024}
+  agent:
+    max-iterations: 5   # ReAct 循环最大迭代次数（think 节点）
+  # ===== Phase 3 (Module 06): 安全与上下文管理 =====
+  security:
+    confirm-tools: [applyRefund]   # 需要用户二次确认的工具
+    denied-tools: []               # 直接拒绝的工具
+    pii-mode: MASK                 # PII 脱敏模式：MASK / REMOVE / PASS
+    injection-sensitivity: 0.8     # Prompt Injection 检测灵敏度
+    hallucination-check: true      # 输出幻觉检测开关
+    append-safety-note: false      # 是否在回复末尾附加安全提示
+    rate-limit-per-minute: 10      # 每用户每分钟最大请求数
+  # ===== Phase 3 (Module 05): 向量存储 PGVector =====
+  # 留空时向量检索禁用（应用照常启动，BM25 关键词检索仍可用）
+  pgvector:
+    url: ${CAMPUSDEAL_PGVECTOR_URL:}
+    username: ${CAMPUSDEAL_PGVECTOR_USERNAME:postgres}
+    password: ${CAMPUSDEAL_PGVECTOR_PASSWORD:postgres}
+  # ===== Phase 3 (Module 05): Neo4j 知识图谱 =====
+  # Driver 懒加载，实例未启动时应用照常启动，图谱查询降级为空结果
+  neo4j:
+    uri: ${CAMPUSDEAL_NEO4J_URI:bolt://localhost:7687}
+    user: ${CAMPUSDEAL_NEO4J_USER:neo4j}
+    password: ${CAMPUSDEAL_NEO4J_PASSWORD:neo4j}
+
+
+
+logging:
+  level:
+    com.campusdeal: info
+

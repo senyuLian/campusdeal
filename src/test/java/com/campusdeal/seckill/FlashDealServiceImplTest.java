@@ -1,0 +1,153 @@
+package com.campusdeal.seckill;
+
+import com.campusdeal.cache.BloomFilterService;
+import com.campusdeal.dto.Result;
+import com.campusdeal.dto.UserDTO;
+import com.campusdeal.mq.FlashDealOrderMessage;
+import com.campusdeal.mq.FlashDealProducer;
+import com.campusdeal.service.impl.FlashDealServiceImpl;
+import com.campusdeal.utils.RedisConstants;
+import com.campusdeal.utils.RedisIdWorker;
+import com.campusdeal.utils.UserHolder;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.time.Duration;
+import java.util.Collections;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+/**
+ * FlashDealServiceImpl 单元测试（FD-01..05）
+ *
+ * <p>全部 Mock（布隆过滤器、Redis、ID 生成器），Caffeine 使用真实内存缓存，
+ * 不依赖外部服务。</p>
+ */
+@ExtendWith(MockitoExtension.class)
+class FlashDealServiceImplTest {
+
+    @Mock private BloomFilterService bloomFilter;
+    @Mock private StringRedisTemplate stringRedisTemplate;
+    @Mock private ValueOperations<String, String> valueOps;
+    @Mock private RedisIdWorker redisIdWorker;
+    @Mock private DefaultRedisScript<Long> flashDealScript;
+    @Mock private FlashDealProducer flashDealProducer;
+
+    @InjectMocks private FlashDealServiceImpl service;
+
+    /** 真实 Caffeine 缓存（内存，不需要 mock） */
+    private Cache<Long, Boolean> stockCache;
+
+    @BeforeEach
+    void setUp() {
+        stockCache = Caffeine.newBuilder()
+                .expireAfterWrite(Duration.ofSeconds(1))
+                .maximumSize(100)
+                .build();
+        ReflectionTestUtils.setField(service, "stockCache", stockCache);
+
+        UserDTO mockUser = new UserDTO();
+        mockUser.setId(1001L);
+        UserHolder.saveUser(mockUser);
+    }
+
+    @AfterEach
+    void tearDown() {
+        UserHolder.removeUser();
+    }
+
+    @Test
+    @DisplayName("FD-01: 布隆过滤拒绝，不查缓存也不调 Lua")
+    void shouldRejectOnBloomMiss() {
+        when(bloomFilter.mightContain(999L)).thenReturn(false);
+
+        Result result = service.executeFlashDeal(999L);
+
+        assertThat(result.getSuccess()).isFalse();
+        assertThat(result.getErrorMsg()).contains("not found");
+        verifyNoInteractions(stringRedisTemplate);  // 不调 Redis
+    }
+
+    @Test
+    @DisplayName("FD-02: L1 缓存命中无库存，不调 Lua")
+    void shouldRejectWhenCaffeineIndicatesNoStock() {
+        when(bloomFilter.mightContain(101L)).thenReturn(true);
+        stockCache.put(101L, false);  // 无库存
+
+        Result result = service.executeFlashDeal(101L);
+
+        assertThat(result.getSuccess()).isFalse();
+        assertThat(result.getErrorMsg()).contains("Out of stock");
+        verifyNoInteractions(stringRedisTemplate);  // 不调 Redis
+    }
+
+    @Test
+    @DisplayName("FD-03: Lua 返回成功，返回 orderId")
+    void shouldReturnOrderIdOnSuccess() {
+        when(bloomFilter.mightContain(101L)).thenReturn(true);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOps);
+        when(valueOps.get(RedisConstants.FLASH_DEAL_STOCK_KEY + "101")).thenReturn("100");
+        when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
+                .thenReturn(0L);
+        when(redisIdWorker.getNextId("order")).thenReturn(20260812000001L);
+
+        Result result = service.executeFlashDeal(101L);
+
+        assertThat(result.getSuccess()).isTrue();
+        assertThat(result.getData()).isEqualTo(20260812000001L);
+        verify(redisIdWorker).getNextId("order");
+        // 秒杀成功 → 异步发 Kafka
+        verify(flashDealProducer).send(any(FlashDealOrderMessage.class));
+    }
+
+    @Test
+    @DisplayName("FD-04: Lua 返回库存不足，更新 Caffeine 缓存")
+    void shouldRejectWhenLuaOutOfStock() {
+        when(bloomFilter.mightContain(101L)).thenReturn(true);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOps);
+        when(valueOps.get(RedisConstants.FLASH_DEAL_STOCK_KEY + "101")).thenReturn("100");
+        when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
+                .thenReturn(1L);
+
+        Result result = service.executeFlashDeal(101L);
+
+        assertThat(result.getSuccess()).isFalse();
+        assertThat(result.getErrorMsg()).contains("Out of stock");
+        // 无库存结果回填本地缓存，后续请求走 L1 直接拒绝
+        assertThat(stockCache.getIfPresent(101L)).isFalse();
+    }
+
+    @Test
+    @DisplayName("FD-05: Lua 返回重复下单")
+    void shouldRejectDuplicateOrder() {
+        when(bloomFilter.mightContain(101L)).thenReturn(true);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOps);
+        when(valueOps.get(RedisConstants.FLASH_DEAL_STOCK_KEY + "101")).thenReturn("100");
+        when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
+                .thenReturn(2L);
+
+        Result result = service.executeFlashDeal(101L);
+
+        assertThat(result.getSuccess()).isFalse();
+        assertThat(result.getErrorMsg()).contains("Already purchased");
+    }
+}
