@@ -105,12 +105,12 @@ SSE 事件协议：`thinking / tool_call / tool_result / confirm / chunk / done 
 
 ## 🧪 测试
 
-完整测试方案与报告见 `doc/` 目录：
+测试与规划文档见 `doc/` 目录：
 
 ```
-doc/test-plan/      测试计划（00-11：接口 / 联调 / 功能 / 缓存 / 秒杀 / 一致性 / Agent / RAG / 安全 / 性能 / 回归）
-doc/test-reports/   测试报告（00-11，含每模块问题修复记录）
-tools/              运行时回归脚本（api-contract / concurrency / perf / security ...）
+doc/final-plan.md           顶层规划（项目概览 / 架构 / Phase 划分 / 技术决策）
+doc/performance-report.md   性能测试报告（秒杀 / 缓存 / Agent / RAG）
+tools/                      运行时回归脚本（api-contract / concurrency / perf / security ...）
 ```
 
 - 单元测试：`mvn test`（**171/171 全绿**，JDK17）
@@ -134,7 +134,8 @@ tools/              运行时回归脚本（api-contract / concurrency / perf / 
 ## 📄 文档
 
 - `CLAUDE.md` — 项目开发约定（结构、Redis Key 规范、构建注意）
-- `doc/test-plan/README.md` — 测试方案索引
+- `doc/final-plan.md` — 顶层规划文档
+- `doc/performance-report.md` — 性能测试报告
 
 ---
 
