@@ -8,7 +8,6 @@ import org.springframework.stereotype.Component;
 
 import jakarta.annotation.Resource;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 按关键字搜索商家。
@@ -29,10 +28,14 @@ public class SearchMerchantTool {
         if (merchants == null || merchants.isEmpty()) {
             return "{\"merchants\":[]}";
         }
-        String items = merchants.stream()
-                .map(m -> String.format("{\"id\":%d,\"name\":\"%s\",\"avgPrice\":%d}",
-                        m.getId(), m.getName(), m.getAvgPrice() == null ? 0 : m.getAvgPrice()))
-                .collect(Collectors.joining(","));
-        return "{\"merchants\":[" + items + "]}";
+        // T11：String.format 手拼 JSON 在名称含引号/反斜杠时产生非法 JSON，改用 JSON 对象序列化
+        cn.hutool.json.JSONArray arr = cn.hutool.json.JSONUtil.createArray();
+        for (Merchant m : merchants) {
+            arr.add(cn.hutool.json.JSONUtil.createObj()
+                    .set("id", m.getId())
+                    .set("name", m.getName())
+                    .set("avgPrice", m.getAvgPrice() == null ? 0 : m.getAvgPrice()));
+        }
+        return cn.hutool.json.JSONUtil.createObj().set("merchants", arr).toString();
     }
 }

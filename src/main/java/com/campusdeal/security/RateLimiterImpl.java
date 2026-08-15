@@ -19,8 +19,10 @@ import java.util.Collections;
 public class RateLimiterImpl implements RateLimiter {
 
     private static final String RATE_LIMIT_KEY = "ratelimit:user:";
-    private static final int DEFAULT_CAPACITY = 10;   // 每分钟 10 次
     private static final long REFILL_INTERVAL_MS = 60_000;
+
+    @Resource
+    private SecurityProperties securityProperties;
 
     /**
      * 令牌桶 Lua 脚本（原子执行）。
@@ -79,7 +81,7 @@ public class RateLimiterImpl implements RateLimiter {
         Long result = stringRedisTemplate.execute(tokenBucketScript,
                 Collections.singletonList(key),
                 String.valueOf(System.currentTimeMillis()),
-                String.valueOf(DEFAULT_CAPACITY),
+                String.valueOf(capacity()),
                 String.valueOf(REFILL_INTERVAL_MS));
         return result != null && result >= 0;
     }
@@ -88,6 +90,12 @@ public class RateLimiterImpl implements RateLimiter {
     public long availableTokens(Long userId) {
         String key = RATE_LIMIT_KEY + userId;
         String tokens = (String) stringRedisTemplate.opsForHash().get(key, "tokens");
-        return tokens != null ? Long.parseLong(tokens) : DEFAULT_CAPACITY;
+        return tokens != null ? Long.parseLong(tokens) : capacity();
+    }
+
+    /** T6：容量取自配置 rate-limit-per-minute（默认 10），配置不再硬编码 */
+    private int capacity() {
+        int configured = securityProperties.getRateLimitPerMinute();
+        return configured <= 0 ? 10 : configured;
     }
 }

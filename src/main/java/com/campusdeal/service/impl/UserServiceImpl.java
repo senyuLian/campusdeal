@@ -86,7 +86,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     public Result sign() {
         Long userId = UserHolder.getUser().getId();
         LocalDate now = LocalDate.now();
-        String key = USER_SIGN_KEY + userId + ":" + now.getYear() + ":" + now.getMonth();
+        // 用 getMonthValue() 取数字月份；getMonth() 返回 Month 枚举，toString 为英文名（AUGUST），与约定 sign:{userId}:{year}:{month} 不符
+        String key = USER_SIGN_KEY + userId + ":" + now.getYear() + ":" + now.getMonthValue();
         int day = now.getDayOfMonth();
         stringRedisTemplate.opsForValue().setBit(key, day - 1, true);
         return Result.ok();
@@ -97,7 +98,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         Long userId = UserHolder.getUser().getId();
         LocalDate now = LocalDate.now();
         int day = now.getDayOfMonth();
-        String key = USER_SIGN_KEY + userId + ":" + now.getYear() + ":" + now.getMonth();
+        String key = USER_SIGN_KEY + userId + ":" + now.getYear() + ":" + now.getMonthValue();
         List<Long> longs = stringRedisTemplate.opsForValue().bitField(key,
                 BitFieldSubCommands.create().get(BitFieldSubCommands.BitFieldType.unsigned(day)).valueAt(0));
         if (longs == null || longs.isEmpty()) {

@@ -21,9 +21,11 @@ import org.springframework.transaction.annotation.Transactional;
 import jakarta.annotation.Resource;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 
 import static com.campusdeal.utils.RedisConstants.FLASH_DEAL_STOCK_KEY;
+import static com.campusdeal.utils.RedisConstants.FLASH_DEAL_TIME_KEY;
 
 /**
  * <p>
@@ -89,6 +91,12 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         seckillVoucherService.save(seckillVoucher);
         //保存秒杀库存到redis中
         stringRedisTemplate.opsForValue().set(FLASH_DEAL_STOCK_KEY + coupon.getId(), coupon.getStock().toString());
+        // T14：预写活动时间窗（begin|end epoch 毫秒），供 executeFlashDeal 做未开始/已结束拦截
+        if (coupon.getBeginTime() != null && coupon.getEndTime() != null) {
+            stringRedisTemplate.opsForValue().set(FLASH_DEAL_TIME_KEY + coupon.getId(),
+                    coupon.getBeginTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                            + "|" + coupon.getEndTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
+        }
     }
 
 

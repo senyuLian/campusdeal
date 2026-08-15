@@ -16,6 +16,7 @@ public class RedisConstants {
 
     public static final String FLASH_DEAL_STOCK_KEY = "flashdeal:stock:";
     public static final String FLASH_DEAL_ORDER_KEY = "flashdeal:order:";
+    public static final String FLASH_DEAL_TIME_KEY = "flashdeal:time:";
     public static final String POST_LIKED_KEY = "post:liked:";
     public static final String FEED_KEY = "feed:";
     public static final String MERCHANT_GEO_KEY = "merchant:geo:";

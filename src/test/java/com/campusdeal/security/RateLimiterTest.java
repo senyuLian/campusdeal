@@ -12,16 +12,18 @@ import org.springframework.data.redis.core.script.RedisScript;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * RL-01..04：Redis 令牌桶限流测试（Mock StringRedisTemplate）。
+ * RL-01..06：Redis 令牌桶限流测试（Mock StringRedisTemplate）。
  *
  * <p>Lua 脚本被 mock，因此"令牌恢复/超限"通过 execute 的返回值序列来模拟。</p>
  */
@@ -30,6 +32,8 @@ class RateLimiterTest {
 
     @Mock
     private StringRedisTemplate stringRedisTemplate;
+    @Mock
+    private SecurityProperties securityProperties;
 
     @InjectMocks
     private RateLimiterImpl rateLimiter;
@@ -83,5 +87,29 @@ class RateLimiterTest {
         List<List<String>> allKeys = keyCaptor.getAllValues();
         assertTrue(allKeys.get(0).get(0).endsWith(":1001"));
         assertTrue(allKeys.get(1).get(0).endsWith(":1002"));
+    }
+
+    @Test
+    @DisplayName("RL-05 匿名 userId=null：直接放行，不触碰 Redis")
+    void rl05_anonymousBypass() {
+        assertTrue(rateLimiter.tryAcquire(null));
+        verify(stringRedisTemplate, never())
+                .execute(any(RedisScript.class), anyList(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("RL-06 T6：rate-limit-per-minute 配置接线，容量取配置值而非硬编码 10")
+    void rl06_configurableCapacity() {
+        when(securityProperties.getRateLimitPerMinute()).thenReturn(3);
+        when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any(), any()))
+                .thenReturn(2L);
+
+        rateLimiter.tryAcquire(1001L);
+
+        ArgumentCaptor<String> argCaptor = ArgumentCaptor.forClass(String.class);
+        verify(stringRedisTemplate).execute(
+                any(RedisScript.class), anyList(), argCaptor.capture(), argCaptor.capture(), argCaptor.capture());
+        // 三个 varargs：时间戳 / capacity / 补充间隔；第 2 个应是配置的 3
+        assertEquals("3", argCaptor.getAllValues().get(1));
     }
 }

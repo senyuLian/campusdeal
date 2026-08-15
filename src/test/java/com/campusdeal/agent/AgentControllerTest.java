@@ -60,12 +60,19 @@ class AgentControllerTest {
     @DisplayName("AC-03 confirm：批准后委托门禁执行并返回 ok")
     void ac03_confirmDelegates() {
         ConfirmRequest request = new ConfirmRequest("cfm-1", true);
-        when(sensitiveGuard.handleConfirmation("cfm-1", true))
-                .thenReturn(GuardResult.builder().executed(true).result("{\"status\":\"refunded\"}").message("操作成功").build());
+        com.campusdeal.dto.UserDTO u = new com.campusdeal.dto.UserDTO();
+        u.setId(1001L);
+        com.campusdeal.utils.UserHolder.saveUser(u);
+        try {
+            when(sensitiveGuard.handleConfirmation("cfm-1", true, 1001L))
+                    .thenReturn(GuardResult.builder().executed(true).result("{\"status\":\"refunded\"}").message("操作成功").build());
 
-        Result result = controller.confirm(request);
+            Result result = controller.confirm(request);
 
-        assertTrue(result.getSuccess());
-        verify(sensitiveGuard).handleConfirmation("cfm-1", true);
+            assertTrue(result.getSuccess());
+            verify(sensitiveGuard).handleConfirmation("cfm-1", true, 1001L);
+        } finally {
+            com.campusdeal.utils.UserHolder.removeUser();
+        }
     }
 }

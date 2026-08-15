@@ -48,8 +48,11 @@ public class AgentController {
      */
     @PostMapping("/confirm")
     public Result confirm(@RequestBody ConfirmRequest request) {
+        // T8：越权校验 —— 传入当前登录用户，SensitiveGuard 校验其与确认创建者一致
+        Long userId = com.campusdeal.utils.UserHolder.getUser() == null
+                ? null : com.campusdeal.utils.UserHolder.getUser().getId();
         GuardResult result = sensitiveGuard.handleConfirmation(
-                request.getConfirmationId(), request.isApproved());
+                request.getConfirmationId(), request.isApproved(), userId);
         return result.isExecuted() ? Result.ok(result) : Result.fail(result.getMessage());
     }
 }

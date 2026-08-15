@@ -16,6 +16,8 @@ public class FlashDealContext {
     private Long userId;
     /** 生成的订单 ID（Lua 成功后才生成） */
     private Long orderId;
+    /** Lua 返回的剩余库存（>=0 表示成功；用于售罄后写 L1 负缓存） */
+    private int remainingStock;
     /** 执行开始时间（用于延迟监控） */
     private long startNanos;
     /** 各层耗时（用于压测分析） */

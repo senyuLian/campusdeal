@@ -32,7 +32,6 @@ public class InputSanitizerImpl implements InputSanitizer {
     private SecurityProperties securityProperties;
 
     private static final int MAX_INPUT_LENGTH = 2000;
-    private static final double MIN_SAFETY_SCORE = 0.3;
 
     @Override
     public SanitizedInput sanitize(String rawInput) {
@@ -57,28 +56,52 @@ public class InputSanitizerImpl implements InputSanitizer {
 
         // === 3. Prompt Injection 检测 ===
         double injectionScore = detectPromptInjection(cleaned);
+        // 明确命中提示注入特征（单条 IGNORE_PATTERN 0.6 / 越狱词 0.5）即视为安全事件直接拒绝，
+        // 而不是仅扣分 —— 否则 1.0-0.6=0.4 仍高于阈值被放行（如「忽略以上所有指令」）。
+        if (injectionScore >= 0.5) {
+            log.warn("Input rejected: prompt injection detected, injectionScore={}", injectionScore);
+            throw new SecurityViolationException(
+                    "输入被判定为不安全，已拦截 (injectionScore=" + injectionScore + ")");
+        }
         safetyScore -= injectionScore;
         if (injectionScore > 0.5) {
             warnings.add("检测到提示注入特征 (score=" + injectionScore + ")");
         }
 
-        // === 4. PII 脱敏 ===
+        // === 4. PII 处理（T9：三种模式 + IP 地址） ===
         Map<String, String> piiReplacements = new HashMap<>();
         boolean containsPii = false;
         PiiMode mode = securityProperties.getPiiMode();
-        if (mode == PiiMode.MASK) {
-            cleaned = maskPattern(cleaned, PiiPatterns.PHONE, "phone", piiReplacements);
-            cleaned = maskPattern(cleaned, PiiPatterns.ID_CARD, "idCard", piiReplacements);
-            cleaned = maskPattern(cleaned, PiiPatterns.EMAIL, "email", piiReplacements);
-            cleaned = maskPattern(cleaned, PiiPatterns.BANK_CARD, "bankCard", piiReplacements);
+        List<Map.Entry<Pattern, String>> piiRules = List.of(
+                Map.entry(PiiPatterns.PHONE, "phone"),
+                Map.entry(PiiPatterns.ID_CARD, "idCard"),
+                Map.entry(PiiPatterns.EMAIL, "email"),
+                Map.entry(PiiPatterns.BANK_CARD, "bankCard"),
+                Map.entry(PiiPatterns.IP_ADDRESS, "ip"));
+        if (mode == PiiMode.PASS) {
+            // 调试模式：仅检测并告警，不改动原文
+            for (Map.Entry<Pattern, String> rule : piiRules) {
+                Matcher m = rule.getKey().matcher(cleaned);
+                if (m.find()) {
+                    containsPii = true;
+                    piiReplacements.put(rule.getValue(), m.group());
+                }
+            }
+            if (containsPii) {
+                warnings.add("PII 存在（PASS 模式未处理）: " + piiReplacements.keySet());
+            }
+        } else {
+            for (Map.Entry<Pattern, String> rule : piiRules) {
+                cleaned = maskPattern(cleaned, rule.getKey(), rule.getValue(), mode, piiReplacements);
+            }
             containsPii = !piiReplacements.isEmpty();
             if (containsPii) {
-                warnings.add("PII 已脱敏: " + piiReplacements.keySet());
+                warnings.add("PII 已" + (mode == PiiMode.REMOVE ? "移除" : "脱敏") + ": " + piiReplacements.keySet());
             }
         }
 
-        // === 5. 安全检查：低于阈值 → 拒绝 ===
-        if (safetyScore < MIN_SAFETY_SCORE) {
+        // === 5. 安全检查：低于灵敏度阈值 → 拒绝（T9：阈值接线自配置 injection-sensitivity） ===
+        if (safetyScore < securityProperties.getInjectionSensitivity()) {
             log.warn("Input rejected: safetyScore={}, warnings={}", safetyScore, warnings);
             throw new SecurityViolationException(
                     "输入被判定为不安全，已拦截 (score=" + safetyScore + ")");
@@ -121,17 +144,21 @@ public class InputSanitizerImpl implements InputSanitizer {
     }
 
     /**
-     * PII 脱敏：匹配 → 替换为脱敏形式。
+     * PII 处理：按模式替换匹配文本（MASK 脱敏 / REMOVE 移除）。
      */
-    private String maskPattern(String text, Pattern pattern,
-                               String type, Map<String, String> replacements) {
+    private String maskPattern(String text, Pattern pattern, String type,
+                               PiiMode mode, Map<String, String> replacements) {
         Matcher matcher = pattern.matcher(text);
         StringBuffer sb = new StringBuffer();
         while (matcher.find()) {
             String original = matcher.group();
-            String masked = mask(original);
-            replacements.put(type, masked);
-            matcher.appendReplacement(sb, Matcher.quoteReplacement(masked));
+            String replacement = switch (mode) {
+                case MASK -> mask(original);
+                case REMOVE -> "";
+                case PASS -> original;
+            };
+            replacements.put(type, replacement);
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
         }
         matcher.appendTail(sb);
         return sb.toString();

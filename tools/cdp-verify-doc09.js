@@ -128,16 +128,17 @@ async function main() {
     // 第二排金刚区
     const quickCount = await evaluate(`document.querySelectorAll('.quick-nav__item').length`);
     report('金刚区 5 个入口', quickCount === 5, 'count=' + quickCount);
+    // 注：金刚区为 抢购/附近/卡券/签到/美食（home.js：「美食」已上移到金刚区，宫格内不再重复展示）
     const quickLabels = await evaluate(`[...document.querySelectorAll('.quick-nav__label')].map(e => e.textContent.trim()).join(',')`);
-    report('金刚区标签', /抢购/.test(quickLabels) && /附近/.test(quickLabels) && /卡券/.test(quickLabels) && /动态/.test(quickLabels) && /签到/.test(quickLabels), quickLabels);
+    report('金刚区标签', /抢购/.test(quickLabels) && /附近/.test(quickLabels) && /卡券/.test(quickLabels) && /美食/.test(quickLabels) && /签到/.test(quickLabels), quickLabels);
 
     // 抢购入口脉冲点（常驻）
     const pulse = await evaluate(`!!document.querySelector('.quick-nav__pulse')`);
     report('抢购入口脉冲点', pulse);
 
-    // 第三排分类宫格
+    // 第三排分类宫格：4 个分类 + 「更多」= 5（美食已移入金刚区）
     const gridCount = await evaluate(`document.querySelectorAll('.campus-grid__item').length`);
-    report('分类宫格 ≥5+更多', gridCount >= 6, 'count=' + gridCount);
+    report('分类宫格 4+更多', gridCount >= 5, 'count=' + gridCount);
 
     // 搜索面板：真实点击路径（包裹层 click → ref.focus → @focus 打开）
     const panelOpened = await evaluate(`(async () => {

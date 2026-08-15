@@ -2,6 +2,7 @@ package com.campusdeal.agent;
 
 import cn.hutool.json.JSONUtil;
 import com.campusdeal.dto.Result;
+import com.campusdeal.dto.UserDTO;
 import com.campusdeal.security.GuardDecision;
 import com.campusdeal.security.InputSanitizer;
 import com.campusdeal.security.OutputVerifier;
@@ -283,6 +284,14 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
                 sendConfirmEvent(decision);
             } else {
                 // === ALLOWED：直接执行 ===
+                // 工具执行发生在 LangGraph 异步线程，UserHolder(ThreadLocal) 为空；
+                // 先把图状态里的 userId 写回 UserHolder，工具内 getUser() 才能取到当前用户，执行完再清理。
+                Long toolUserId = state.getUserId();
+                if (toolUserId != null) {
+                    UserDTO toolUser = new UserDTO();
+                    toolUser.setId(toolUserId);
+                    UserHolder.saveUser(toolUser);
+                }
                 String r;
                 boolean success = true;
                 try {
@@ -290,6 +299,8 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
                 } catch (Exception e) {
                     success = false;
                     r = "{\"error\":\"" + e.getMessage() + "\"}";
+                } finally {
+                    UserHolder.removeUser();
                 }
                 long cost = System.currentTimeMillis() - start;
                 result = ToolResult.builder()

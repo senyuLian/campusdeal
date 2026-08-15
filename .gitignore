@@ -38,3 +38,6 @@ backup/
 dump.rdb
 *.log
 logs/
+
+### 本地敏感配置（API Key 等） ###
+src/main/resources/application-local.yaml

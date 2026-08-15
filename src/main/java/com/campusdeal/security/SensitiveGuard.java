@@ -20,7 +20,8 @@ public interface SensitiveGuard {
      *
      * @param confirmationId 确认 ID
      * @param approved       用户是否同意
+     * @param userId         发起确认请求的用户 ID（T8：越权校验，须与创建者一致）
      * @return 如批准，执行原操作并返回结果
      */
-    GuardResult handleConfirmation(String confirmationId, boolean approved);
+    GuardResult handleConfirmation(String confirmationId, boolean approved, Long userId);
 }

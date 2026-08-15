@@ -19,6 +19,11 @@ import java.util.List;
 
 /**
  * Canal 客户端实现：订阅 MySQL binlog，将变更转化为 Redis 缓存失效
+ *
+ * <p>T7 修复：连接异常后不再「线程退出 + running 恒为 true 导致无法重启」，
+ * 改为外层 while(running) 重连循环：失败后指数退避（默认 1s 起，上限 30s）自动重连；
+ * stop() 置 running=false + interrupt + disconnect 让阻塞的 getWithoutAck 尽快返回。
+ * 重连期间缓存失效中断，由 30s 逻辑过期兜底（降级可用）。</p>
  */
 @Slf4j
 @Component
@@ -30,47 +35,97 @@ public class CanalClientImpl implements CanalClient {
     private CanalConnectorFactory canalConnectorFactory;
 
     @Value("${campusdeal.canal.host:localhost}")
-    private String canalHost;
+    private String canalHost = "localhost";
     @Value("${campusdeal.canal.port:11111}")
-    private int canalPort;
+    private int canalPort = 11111;
     @Value("${campusdeal.canal.destination:example}")
-    private String destination;
+    private String destination = "example";
+    /** 重连基础退避（毫秒），第 N 次失败等待 N * base（封顶 30s） */
+    @Value("${campusdeal.canal.reconnect-base-delay-ms:1000}")
+    private long reconnectBaseDelayMs = 1000;
 
     private volatile boolean running = false;
-    private Thread canalThread;
-    private CanalConnector connector;
+    private volatile Thread canalThread;
+    private volatile CanalConnector connector;
 
     @Override
     public void start() {
-        if (running) return;
-        running = true;
+        synchronized (this) {
+            if (running) return;
+            running = true;
+        }
+        Thread t = new Thread(this::runLoop, "canal-client");
+        canalThread = t;
+        t.setDaemon(true);
+        t.start();
+    }
 
-        canalThread = new Thread(() -> {
-            connector = canalConnectorFactory.create(
-                    canalHost, canalPort, destination, "", "");
+    /** 主循环：连接 → 消费 → 失败退避重连，直到 stop() 或被新线程取代 */
+    private void runLoop() {
+        int retryCount = 0;
+        while (running && canalThread == Thread.currentThread()) {
+            CanalConnector conn = null;
             try {
-                connector.connect();
-                connector.subscribe("campusdeal\\.tb_voucher,campusdeal\\.tb_shop,campusdeal\\.tb_seckill_voucher");
+                conn = canalConnectorFactory.create(
+                        canalHost, canalPort, destination, "", "");
+                connector = conn;
+                conn.connect();
+                conn.subscribe("campusdeal\\.tb_voucher,campusdeal\\.tb_shop,campusdeal\\.tb_seckill_voucher");
+                retryCount = 0;
                 log.info("Canal client connected to {}:{}, destination={}",
                         canalHost, canalPort, destination);
 
                 while (running) {
-                    Message message = connector.getWithoutAck(1000);
-                    long batchId = message.getId();
-                    if (batchId == -1 || message.getEntries().isEmpty()) {
+                    Message message = conn.getWithoutAck(1000);
+                    if (isHeartbeatOrEmpty(message)) {
                         continue;
                     }
                     handleEntries(message.getEntries());
-                    connector.ack(batchId);
+                    conn.ack(message.getId());
                 }
             } catch (Exception e) {
-                log.error("Canal client error", e);
+                if (e instanceof InterruptedException || Thread.currentThread().isInterrupted()) {
+                    Thread.currentThread().interrupt();
+                    log.info("Canal client stopped by interrupt");
+                    break;
+                }
+                if (!running || canalThread != Thread.currentThread()) {
+                    break;
+                }
+                retryCount++;
+                long backoff = Math.min(reconnectBaseDelayMs * retryCount, 30_000L);
+                log.warn("Canal client connection lost (retry #{}), reconnect in {}ms: {}",
+                        retryCount, backoff, e.getMessage());
+                try {
+                    Thread.sleep(backoff);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             } finally {
-                if (connector != null) connector.disconnect();
+                if (conn != null) {
+                    try {
+                        conn.disconnect();
+                    } catch (Exception ignore) {
+                        // 连接已断，disconnect 失败可忽略
+                    }
+                }
+                if (connector == conn) {
+                    connector = null;
+                }
             }
-        }, "canal-client");
-        canalThread.setDaemon(true);
-        canalThread.start();
+        }
+        log.info("Canal client thread exiting");
+    }
+
+    /** 心跳批（batchId=-1）或空批 → 不处理（package-private 便于单测） */
+    boolean isHeartbeatOrEmpty(Message message) {
+        return message.getId() == -1 || message.getEntries().isEmpty();
+    }
+
+    /** 当前 canal 线程（package-private 便于单测断言线程身份/幂等） */
+    Thread getCanalThread() {
+        return canalThread;
     }
 
     /** 处理一批 binlog 事件（package-private 便于单元测试） */
@@ -126,6 +181,15 @@ public class CanalClientImpl implements CanalClient {
     public void stop() {
         running = false;
         if (canalThread != null) canalThread.interrupt();
+        // 断开当前连接，让阻塞的 getWithoutAck(1000) 尽快返回
+        CanalConnector conn = connector;
+        if (conn != null) {
+            try {
+                conn.disconnect();
+            } catch (Exception ignore) {
+                // 连接已断
+            }
+        }
     }
 
     @Override

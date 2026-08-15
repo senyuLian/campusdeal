@@ -113,11 +113,13 @@ async function main() {
 
     console.log('\n══ 2. Merchant 模块 ══');
     await expectPublic('GET /merchant/{id}', 'GET', '/merchant/1');
-    // P0-4 缺陷：POST/PUT /merchant 应需登录，当前公开
-    const rPostMerchant = await req('POST', '/merchant', {});
-    report('POST /merchant 应需登录(P0-4)', rPostMerchant.status === 401, '当前=' + rPostMerchant.status + '（公开=缺陷）');
-    const rPutMerchant = await req('PUT', '/merchant', {});
-    report('PUT /merchant 应需登录(P0-4)', rPutMerchant.status === 401, '当前=' + rPutMerchant.status + '（公开=缺陷）');
+    // P0-4 回归：POST/PUT /merchant 应需登录（公开路径，Controller 内自校验）。
+    // 注意必须携带合法 JSON body：空 body 会先触发 @RequestBody 解析异常（被全局兜底成 200），
+    // 走不到 Controller 内的登录校验，导致误报"公开=缺陷"。
+    const rPostMerchant = await req('POST', '/merchant', { body: { name: 'SmokeTestShop', typeId: 1 } });
+    report('POST /merchant 应需登录(P0-4)', rPostMerchant.status === 401, '当前=' + rPostMerchant.status + '（有body无token，期望401）');
+    const rPutMerchant = await req('PUT', '/merchant', { body: { name: 'SmokeTestShop', id: 1 } });
+    report('PUT /merchant 应需登录(P0-4)', rPutMerchant.status === 401, '当前=' + rPutMerchant.status + '（有body无token，期望401）');
     await expectPublic('GET /merchant/of/type', 'GET', '/merchant/of/type', { query: { typeId: 1, current: 1 } });
     await expectPublic('GET /merchant/nearby', 'GET', '/merchant/nearby', { query: { x: 120.149993, y: 30.334229, current: 1 } });
     await expectPublic('GET /merchant/of/name', 'GET', '/merchant/of/name', { query: { name: '奶茶', current: 1 } });
@@ -128,13 +130,16 @@ async function main() {
     await expectPublic('GET /coupon/flash/list', 'GET', '/coupon/flash/list');
     await expectPublic('GET /coupon/list/all', 'GET', '/coupon/list/all');
     await expect401('POST /coupon-order/seckill/{id}', 'POST', '/coupon-order/seckill/10');
-    // 秒杀 happy path（P0-1 缺陷：Kafka 未运行 → 预期 500/服务器异常）
+    // 秒杀 happy path（P0-1 缺陷：Kafka 未运行 → 预期 500/服务器异常）。
+    // 幂等考虑：重复运行（同用户同 deal）会命中 Lua Set → "Already purchased"，
+    // 这也证明鉴权+下单链路可用；成功 或 重复购买 均视为通过。
     const t0 = Date.now();
     const rSeckill = await req('POST', '/coupon-order/seckill/10', { token });
     const seckillMs = Date.now() - t0;
-    const seckillFail = !(rSeckill.json && rSeckill.json.success === true);
-    report('POST /coupon-order/seckill (auth)', !seckillFail, rSeckill.status + ' / ' + JSON.stringify(rSeckill.json).slice(0, 80) + ` / ${seckillMs}ms`);
-    if (seckillFail) console.log('        ⚠️ 秒杀失败原因（P0-1 预期：Kafka 阻塞5s→500）耗时=' + seckillMs + 'ms');
+    const seckillOk = (rSeckill.json && rSeckill.json.success === true)
+        || (rSeckill.json && rSeckill.json.errorMsg === 'Already purchased');
+    report('POST /coupon-order/seckill (auth)', seckillOk, rSeckill.status + ' / ' + JSON.stringify(rSeckill.json).slice(0, 80) + ` / ${seckillMs}ms`);
+    if (!seckillOk) console.log('        ⚠️ 秒杀失败原因（P0-1 预期：Kafka 阻塞5s→500）耗时=' + seckillMs + 'ms');
 
     console.log('\n══ 4. Follow 模块 ══');
     await expect401('PUT /follow/{id}/{isFollow}', 'PUT', '/follow/1/1');

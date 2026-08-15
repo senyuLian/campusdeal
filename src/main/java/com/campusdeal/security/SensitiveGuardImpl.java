@@ -2,9 +2,11 @@ package com.campusdeal.security;
 
 import com.campusdeal.agent.ToolRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.Resource;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,10 +29,13 @@ public class SensitiveGuardImpl implements SensitiveGuard {
     /** 确认 ID → 待确认的操作上下文 */
     private final Map<String, PendingConfirmation> pendingConfirmations = new ConcurrentHashMap<>();
 
+    /** T8：确认上下文超时时间（默认 60s，与 GuardDecision.timeoutSeconds 一致；测试可缩短） */
+    long confirmationTimeoutMs = 60_000;
+
     @Override
     public GuardDecision evaluate(String toolName, String arguments, Long userId) {
         // === 1. 拒绝列表中的工具直接拒绝 ===
-        if (securityProperties.getDeniedTools().contains(toolName)) {
+        if (matches(securityProperties.getDeniedTools(), toolName)) {
             return GuardDecision.builder()
                     .action("DENIED")
                     .message("此操作暂不支持，请联系人工客服。")
@@ -38,7 +43,7 @@ public class SensitiveGuardImpl implements SensitiveGuard {
         }
 
         // === 2. 确认列表中的工具需要二次确认 ===
-        if (securityProperties.getConfirmTools().contains(toolName)) {
+        if (matches(securityProperties.getConfirmTools(), toolName)) {
             String confirmId = UUID.randomUUID().toString();
             pendingConfirmations.put(confirmId, new PendingConfirmation(
                     toolName, arguments, userId, System.currentTimeMillis()));
@@ -55,12 +60,28 @@ public class SensitiveGuardImpl implements SensitiveGuard {
     }
 
     @Override
-    public GuardResult handleConfirmation(String confirmationId, boolean approved) {
+    public GuardResult handleConfirmation(String confirmationId, boolean approved, Long userId) {
         PendingConfirmation pending = pendingConfirmations.remove(confirmationId);
         if (pending == null) {
             return GuardResult.builder()
                     .executed(false)
                     .message("确认已过期或不存在，请重新操作。")
+                    .build();
+        }
+
+        // T8：超时校验 —— 即便 Map 中还残留（调度清理未跑），也不允许执行
+        if (System.currentTimeMillis() - pending.createdAt() > confirmationTimeoutMs) {
+            return GuardResult.builder()
+                    .executed(false)
+                    .message("确认已过期或不存在，请重新操作。")
+                    .build();
+        }
+
+        // T8：越权校验 —— 只有创建该确认的用户本人才能批准
+        if (pending.userId() == null || userId == null || !pending.userId().equals(userId)) {
+            return GuardResult.builder()
+                    .executed(false)
+                    .message("无权确认该操作。")
                     .build();
         }
 
@@ -80,9 +101,35 @@ public class SensitiveGuardImpl implements SensitiveGuard {
                 .build();
     }
 
+    /**
+     * T8：定期清理超时的待确认上下文（@EnableScheduling 已开启）。
+     */
+    @Scheduled(fixedRate = 30_000)
+    void evictExpired() {
+        long now = System.currentTimeMillis();
+        pendingConfirmations.entrySet().removeIf(e ->
+                now - e.getValue().createdAt() > confirmationTimeoutMs);
+    }
+
+    /**
+     * 判断工具名是否命中配置列表。T3 修复：配置项与工具注册名存在 camelCase / snake_case 混用
+     * （如配置 {@code applyRefund}、工具注册名 {@code apply_refund}），统一归一化后再比较。
+     */
+    private static boolean matches(List<String> configured, String toolName) {
+        String normalized = toSnakeCase(toolName);
+        return configured.stream()
+                .map(SensitiveGuardImpl::toSnakeCase)
+                .anyMatch(c -> c.equals(normalized));
+    }
+
+    /** camelCase → snake_case（已是 snake_case 原样返回） */
+    private static String toSnakeCase(String name) {
+        return name.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toLowerCase();
+    }
+
     private String buildConfirmMessage(String toolName, String arguments) {
-        return switch (toolName) {
-            case "applyRefund" -> "您确定要申请退款吗？退款后优惠券将失效。";
+        return switch (toSnakeCase(toolName)) {
+            case "apply_refund" -> "您确定要申请退款吗？退款后优惠券将失效。";
             default -> "确定要执行此操作吗？";
         };
     }

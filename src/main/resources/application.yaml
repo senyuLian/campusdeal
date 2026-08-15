@@ -1,6 +1,8 @@
 server:
   port: 8081
 spring:
+  profiles:
+    active: local  # 本地开发配置（含 DeepSeek API Key 等敏感项）见 application-local.yaml，已 gitignore
   flyway:
     enabled: false  # 如果你不需要数据库迁移
   liquibase:
@@ -12,6 +14,10 @@ spring:
     url: jdbc:mysql://localhost:3306/campusdeal?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true
     username: root
     password: 123456
+    hikari:
+      # T16：秒杀同步落库 30 并发时，默认池(10)会让后半请求排队等 DB 连接，拉高 S1 尾延迟。
+      # 扩到 30 后 30 并发 INSERT 全部并行（单条 INSERT ~2-5ms）。
+      maximum-pool-size: 30
   data:
     redis:
         host: localhost
@@ -19,8 +25,11 @@ spring:
         password: 123456
         lettuce:
           pool:
-            max-active: 10
-            max-idle: 10
+            # T16：本环境（Windows 本机 Redis 3.2）实测共享连接并发延迟优于显式连接池，
+            # RedisConfig 已固定 shareNativeConnection=true，此处池参数仅作生产（多核 Linux Redis）
+            # 高并发调优参考，本地默认不生效。
+            max-active: 50
+            max-idle: 20
             min-idle: 1
 #            time-between-eviction-runs: 10s
   kafka:
@@ -70,7 +79,7 @@ campusdeal:
     port: 11111
     destination: example
   # ===== Phase 3 (Module 04): AI Agent =====
-  # DeepSeek API Key（P1-5：移除明文默认值；生产通过环境变量 CAMPUSDEAL_DEEPSEEK_API_KEY 注入，留空时调用 LLM 会提示未配置）
+  # DeepSeek API Key：环境变量注入；本地开发 key 见 application-local.yaml（已 gitignore）
   deepseek:
     api-key: ${CAMPUSDEAL_DEEPSEEK_API_KEY:}
     base-url: ${CAMPUSDEAL_DEEPSEEK_BASE_URL:https://api.deepseek.com/v1}

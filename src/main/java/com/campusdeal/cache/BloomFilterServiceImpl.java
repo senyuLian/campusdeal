@@ -39,7 +39,12 @@ public class BloomFilterServiceImpl implements BloomFilterService, InitializingB
 
     /**
      * 布隆过滤器配置（@ConfigurationProperties 绑定；无 Spring 环境下使用默认值，便于单元测试）
+     *
+     * <p>修复 T5：原先为普通字段初始化，Spring 不会注入 {@code @ConfigurationProperties} 绑定的
+     * 配置 Bean，yaml 中的 {@code fpp / expected-insertions} 恒为默认值。加 {@code @Resource}
+     * 注入后，配置经 CaffeineConfig 的 {@code @EnableConfigurationProperties} 生效。</p>
      */
+    @Resource
     private BloomProperties properties = new BloomProperties();
 
     /**
@@ -78,7 +83,9 @@ public class BloomFilterServiceImpl implements BloomFilterService, InitializingB
                         .gt(FlashDeal::getEndTime, LocalDateTime.now())
         );
 
-        int expectedInsertions = Math.max(activeDeals.size(), 1);  // Guava 要求 > 0
+        // 取配置预期值与实际活动数的较大者：配置值决定容量基线（T5 修复后生效），
+        // 活动数超过配置值时不至于因容量不足而误判率飙升；Guava 要求 > 0
+        int expectedInsertions = Math.max(activeDeals.size(), Math.max(properties.getExpectedInsertions(), 1));
         BloomFilter<Long> newFilter =
                 BloomFilter.create(Funnels.longFunnel(), expectedInsertions, properties.getFpp());
         activeDeals.forEach(d -> newFilter.put(d.getVoucherId()));

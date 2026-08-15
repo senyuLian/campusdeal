@@ -8,7 +8,6 @@ import org.springframework.stereotype.Component;
 
 import jakarta.annotation.Resource;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 查询平台当前可领取的优惠券。
@@ -26,11 +25,15 @@ public class QueryCouponTool {
         if (coupons == null || coupons.isEmpty()) {
             return "{\"coupons\":[]}";
         }
-        String items = coupons.stream()
-                .map(c -> String.format("{\"id\":%d,\"title\":\"%s\",\"payValue\":%d,\"actualValue\":%d}",
-                        c.getId(), c.getTitle(), c.getPayValue() == null ? 0 : c.getPayValue(),
-                        c.getActualValue() == null ? 0 : c.getActualValue()))
-                .collect(Collectors.joining(","));
-        return "{\"coupons\":[" + items + "]}";
+        // T11：手拼 JSON 在标题含引号时非法，改用 JSON 对象序列化
+        cn.hutool.json.JSONArray arr = cn.hutool.json.JSONUtil.createArray();
+        for (Coupon c : coupons) {
+            arr.add(cn.hutool.json.JSONUtil.createObj()
+                    .set("id", c.getId())
+                    .set("title", c.getTitle())
+                    .set("payValue", c.getPayValue() == null ? 0 : c.getPayValue())
+                    .set("actualValue", c.getActualValue() == null ? 0 : c.getActualValue()));
+        }
+        return cn.hutool.json.JSONUtil.createObj().set("coupons", arr).toString();
     }
 }

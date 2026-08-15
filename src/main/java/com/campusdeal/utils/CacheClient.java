@@ -74,7 +74,9 @@ public class CacheClient {
     public <R, ID> R queryWithPassThrough(ID id, String keyPrefix, Class<R> type, Function<ID, R> dbFallback, Long time, TimeUnit unit) {
         String rJson = stringRedisTemplate.opsForValue().get(keyPrefix + id);
         if (StringUtils.isNotBlank(rJson)) {
-            R r = BeanUtil.toBean(rJson, type);
+            // 修复：BeanUtil.toBean(String,Class) 不会把 JSON 字符串解析成对象（字段全为 null），
+            // 缓存命中会返回空实体。改用 JSONUtil.toBean 正确反序列化。
+            R r = JSONUtil.toBean(rJson, type);
             return r;
         }
         if (rJson != null) {

@@ -94,32 +94,32 @@ class SeckillLuaScriptTest {
     }
 
     @Test
-    @DisplayName("LU-01: 正常秒杀返回 0")
+    @DisplayName("LU-01: 正常秒杀返回剩余库存（T16：>=0 = 成功，值为剩余库存）")
     void normalSeckill() {
         stringStore.put("flashdeal:stock:101", "100");
 
-        assertThat(runLua("101", "1001")).isZero();
+        assertThat(runLua("101", "1001")).isEqualTo(99);
     }
 
     @Test
-    @DisplayName("LU-02: 库存不足返回 1")
+    @DisplayName("LU-02: 库存不足返回 -1")
     void outOfStock() {
         stringStore.put("flashdeal:stock:101", "0");
 
-        assertThat(runLua("101", "1001")).isEqualTo(1);
+        assertThat(runLua("101", "1001")).isEqualTo(-1);
     }
 
     @Test
-    @DisplayName("LU-03: 重复下单返回 2")
+    @DisplayName("LU-03: 重复下单返回 -2")
     void duplicateOrder() {
         stringStore.put("flashdeal:stock:101", "100");
         setStore.computeIfAbsent("flashdeal:order:101", x -> new LinkedHashSet<>()).add("1001");
 
-        assertThat(runLua("101", "1001")).isEqualTo(2);
+        assertThat(runLua("101", "1001")).isEqualTo(-2);
     }
 
     @Test
-    @DisplayName("LU-04: 最后一件库存扣减为 0")
+    @DisplayName("LU-04: 最后一件库存扣减为 0，返回剩余 0")
     void lastStock() {
         stringStore.put("flashdeal:stock:101", "1");
 
