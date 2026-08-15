@@ -41,3 +41,21 @@ logs/
 
 ### 本地敏感配置（API Key 等） ###
 src/main/resources/application-local.yaml
+
+### 本地保留的历史文档（已从 git 移除，仅本地参考，勿提交） ###
+# doc/ 仅跟踪 final-plan.md 与 performance-report.md，其余历史文档保留本地
+doc/backend-dev-process.md
+doc/frontend-dev-process.md
+doc/implementation-plan.md
+doc/integration-optimization-plan.md
+doc/phase-*.md
+doc/prime-agent-analysis.md
+doc/project-proposals.md
+doc/task.txt
+doc/test-plan.md
+doc/test-plan/
+doc/test-reports/
+doc/design/
+
+### 个人简历（含姓名/手机号/邮箱等隐私，仅本地，勿提交） ###
+简历/
