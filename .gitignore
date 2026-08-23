@@ -47,11 +47,12 @@ tools/.tokens.json
 tools/.tokens.smoke.json
 
 ### 本地保留的历史文档（已从 git 移除，仅本地参考，勿提交） ###
-# doc/ 跟踪 final-plan.md、performance-report.md 与 test-reports/（测试报告），其余历史文档保留本地
+# doc/ 跟踪 final-plan.md 与 test-reports/（测试报告），其余历史文档保留本地
 doc/backend-dev-process.md
 doc/frontend-dev-process.md
 doc/implementation-plan.md
 doc/integration-optimization-plan.md
+doc/performance-report.md
 doc/phase-*.md
 doc/prime-agent-analysis.md
 doc/project-proposals.md

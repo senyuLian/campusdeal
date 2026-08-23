@@ -108,18 +108,16 @@ SSE 事件协议：`thinking / tool_call / tool_result / confirm / chunk / done 
 
 ## 测试
 
-测试方案与执行报告分列 `doc/test-plan/`（方案）与 `doc/test-reports/`（报告），一一对应：
+测试报告见 `doc/test-reports/`（00 基线 ~ 12 吞吐），覆盖缓存 / 秒杀 / 一致性 / Agent / RAG / 安全 / 性能 / 回归全链路：
 
 ```text
-doc/test-plan/       测试方案：01 接口 · 02 联调E2E · 03 功能 · 04 缓存 · 05 秒杀 · 06 一致性
-                     07 Agent · 08 RAG · 09 安全 · 10 性能 · 11 回归 · 12 吞吐基准
-doc/test-reports/    测试报告：00 基线 ~ 12 吞吐（与方案对应）
+doc/test-reports/    测试报告：00 基线 ~ 12 吞吐
 doc/final-plan.md    顶层规划（项目概览 / 架构 / Phase 划分 / 技术决策）
 tools/               运行时回归脚本（api-smoke / concurrency / perf / throughput / security ...）
 ```
 
 - 单元测试：`mvn test`（**174/174 全绿**，JDK17）
-- 运行时回归：`node tools/<script>.js`（接口契约 40+、秒杀并发无超卖、安全护栏、RAG 降级、秒杀吞吐等，脚本索引见 `doc/test-plan/README.md`）
+- 运行时回归：`node tools/<script>.js`（接口契约 40+、秒杀并发无超卖、安全护栏、RAG 降级、秒杀吞吐等）
 
 ### 核心测试指标
 
@@ -158,12 +156,7 @@ tools/               运行时回归脚本（api-smoke / concurrency / perf / th
 
 - `CLAUDE.md` — 项目开发约定（结构、Redis Key 规范、构建注意）
 - `doc/final-plan.md` — 顶层规划文档
-- `doc/performance-report.md` — 性能测试报告（秒杀 / 缓存 / Agent / RAG）
-- `doc/test-plan.md` + `doc/test-plan/` — 测试方案总索引 + 12 个模块用例
 - `doc/test-reports/` — 测试执行报告（00 基线 ~ 12 吞吐）
-- `doc/design/` — 设计文档 01~09（缓存 / 秒杀 / 异步一致性 / Agent / 检索图谱 / 安全 / 前端）
-- `doc/backend-dev-process.md` / `doc/frontend-dev-process.md` — 前后端开发流程
-- `doc/phase-a-report.md` ~ `phase-e-report.md` — 各阶段报告
 
 ---
 
