@@ -9,7 +9,6 @@ import com.campusdeal.entity.CouponOrder;
 import com.campusdeal.entity.FlashDeal;
 import com.campusdeal.mapper.CouponOrderMapper;
 import com.campusdeal.mapper.FlashDealMapper;
-import com.campusdeal.mq.FlashDealConsumer;
 import com.campusdeal.mq.FlashDealOrderMessage;
 import com.campusdeal.mq.FlashDealProducer;
 import com.campusdeal.mq.OutboxStatus;
@@ -53,8 +52,6 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
     private DefaultRedisScript<Long> flashDealScript;
     @Resource
     private FlashDealProducer flashDealProducer;
-    @Resource
-    private FlashDealConsumer flashDealConsumer;
     @Resource
     private OutboxService outboxService;
     @Resource
@@ -170,19 +167,13 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
                 ctx.getOrderId(), ctx.getUserId(), ctx.getDealId(),
                 System.currentTimeMillis());
 
-        // P0-1/P0-3 修复：同步落库保证订单不丢（Kafka 不可用仍可下单成功）。
-        // 幂等由 FlashDealConsumer.processMessage 的 SETNX + MySQL UNIQUE KEY 兜底。
-        try {
-            flashDealConsumer.processMessage(message);
-        } catch (Exception e) {
-            // 同步落库失败（如 DB 抖动）：写 Outbox PENDING，交由补偿调度器重试
-            log.error("Sync persist order failed: orderId={}", ctx.getOrderId(), e);
+        // 异步落库改造：秒杀主流程只「受理订单」——同步确认投递 Kafka，
+        // 真正的 MySQL 落库由 FlashDealConsumer 异步执行（SETNX 幂等 + UNIQUE KEY 兜底）。
+        // 投递失败则写 Outbox PENDING，交由 OutboxScheduler 最终落库，保证订单不丢。
+        if (!flashDealProducer.send(message)) {
             outboxService.record("sync-" + ctx.getOrderId(),
                     JSONUtil.toJsonStr(message), OutboxStatus.PENDING);
         }
-
-        // 尽力而为发送 Kafka（失败只记日志，不回滚；见 FlashDealProducerImpl）
-        flashDealProducer.send(message);
 
         // T16：Lua 返回剩余库存，最后一单（剩余=0）立即写 L1 负缓存，
         // 消除「库存恰好售罄后、L1 仍无 false 记录」的窗口——S2 耗尽压测从第一波即 0 Redis 命中。
@@ -191,7 +182,7 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
         }
 
         long totalNs = System.nanoTime() - ctx.getStartNanos();
-        log.info("Flash deal success: dealId={}, userId={}, orderId={}, " +
+        log.info("Flash deal accepted: dealId={}, userId={}, orderId={}, " +
                         "bloom={}ns, caffeine={}ns, lua={}ns, total={}ns",
                 ctx.getDealId(), ctx.getUserId(), ctx.getOrderId(),
                 ctx.getBloomCostNs(), ctx.getCaffeineCostNs(), ctx.getLuaCostNs(), totalNs);

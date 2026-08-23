@@ -3,7 +3,6 @@ package com.campusdeal.seckill;
 import com.campusdeal.cache.BloomFilterService;
 import com.campusdeal.dto.Result;
 import com.campusdeal.dto.UserDTO;
-import com.campusdeal.mq.FlashDealConsumer;
 import com.campusdeal.mq.FlashDealOrderMessage;
 import com.campusdeal.mq.FlashDealProducer;
 import com.campusdeal.mq.OutboxStatus;
@@ -36,7 +35,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -59,7 +57,6 @@ class FlashDealServiceImplTest {
     @Mock private RedisIdWorker redisIdWorker;
     @Mock private DefaultRedisScript<Long> flashDealScript;
     @Mock private FlashDealProducer flashDealProducer;
-    @Mock private FlashDealConsumer flashDealConsumer;
     @Mock private OutboxService outboxService;
 
     @InjectMocks private FlashDealServiceImpl service;
@@ -118,12 +115,13 @@ class FlashDealServiceImplTest {
     }
 
     @Test
-    @DisplayName("FD-03: Lua 返回成功，同步落库 + 返回 orderId 字符串（P2-6）")
+    @DisplayName("FD-03: Lua 返回成功，投递 Kafka + 返回 orderId 字符串（P2-6）")
     void shouldReturnOrderIdOnSuccess() {
         when(bloomFilter.mightContain(101L)).thenReturn(true);
         when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
                 .thenReturn(5L);  // T16: >=0 = 成功（值=剩余库存）
         when(redisIdWorker.getNextId("order")).thenReturn(20260812000001L);
+        when(flashDealProducer.send(any(FlashDealOrderMessage.class))).thenReturn(true);
 
         Result result = service.executeFlashDeal(101L);
 
@@ -131,9 +129,9 @@ class FlashDealServiceImplTest {
         // P2-6：雪花 ID 超 JS 精度 → 以字符串下发
         assertThat(result.getData()).isEqualTo("20260812000001");
         verify(redisIdWorker).getNextId("order");
-        // 秒杀成功 → 同步落库（Mock Consumer 直接吞掉） + 尽力而为发 Kafka
-        verify(flashDealConsumer).processMessage(any(FlashDealOrderMessage.class));
+        // 异步落库：投递成功 → 不写 Outbox（落库由 Consumer 异步执行）
         verify(flashDealProducer).send(any(FlashDealOrderMessage.class));
+        verify(outboxService, never()).record(anyString(), anyString(), any(OutboxStatus.class));
     }
 
     @Test
@@ -143,6 +141,7 @@ class FlashDealServiceImplTest {
         when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
                 .thenReturn(0L);  // 剩余库存 = 0（最后一单）
         when(redisIdWorker.getNextId("order")).thenReturn(20260812000004L);
+        when(flashDealProducer.send(any(FlashDealOrderMessage.class))).thenReturn(true);
 
         Result result = service.executeFlashDeal(101L);
 
@@ -157,14 +156,13 @@ class FlashDealServiceImplTest {
     }
 
     @Test
-    @DisplayName("SC-02: 同步落库失败 → 写 Outbox PENDING，秒杀仍成功")
-    void shouldRecordOutboxWhenSyncPersistFails() {
+    @DisplayName("SC-02: Kafka 投递失败 → 写 Outbox PENDING，秒杀仍成功")
+    void shouldRecordOutboxWhenKafkaSendFails() {
         when(bloomFilter.mightContain(101L)).thenReturn(true);
         when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
                 .thenReturn(5L);  // T16: >=0 = 成功（值=剩余库存）
         when(redisIdWorker.getNextId("order")).thenReturn(20260812000002L);
-        doThrow(new RuntimeException("db down"))
-                .when(flashDealConsumer).processMessage(any(FlashDealOrderMessage.class));
+        when(flashDealProducer.send(any(FlashDealOrderMessage.class))).thenReturn(false);
 
         Result result = service.executeFlashDeal(101L);
 
@@ -250,6 +248,7 @@ class FlashDealServiceImplTest {
         when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
                 .thenReturn(5L);  // T16: >=0 = 成功
         when(redisIdWorker.getNextId("order")).thenReturn(20260812000003L);
+        when(flashDealProducer.send(any(FlashDealOrderMessage.class))).thenReturn(true);
 
         Result result = service.executeFlashDeal(101L);
 

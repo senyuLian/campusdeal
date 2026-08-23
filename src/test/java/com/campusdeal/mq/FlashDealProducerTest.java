@@ -20,7 +20,6 @@ import java.util.concurrent.CompletableFuture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -29,9 +28,8 @@ import static org.mockito.Mockito.when;
  *
  * <p>Mock KafkaTemplate，不依赖 Kafka 服务。</p>
  *
- * <p>P0-1 改造后新契约：send() 为<b>异步尽力而为</b>（fire-and-forget），
- * 返回 null、不抛异常；Kafka 发送下沉到专用后台线程池，主流程不受 Kafka 可用性影响。
- * 故 KP-01/02 断言方式改为：验证 KafkaTemplate.send 被异步触达 + send 返回 null。</p>
+ * <p>异步落库改造后新契约：send() 为<b>同步确认 + 有界超时</b>，
+ * 成功返回 true、失败返回 false、不抛异常；调用方据返回值决定是否写 Outbox 补偿。</p>
  */
 @ExtendWith(MockitoExtension.class)
 class FlashDealProducerTest {
@@ -53,19 +51,17 @@ class FlashDealProducerTest {
     }
 
     @Test
-    @DisplayName("KP-01: 异步发送成功——send 返回 null，后台线程触达 KafkaTemplate")
+    @DisplayName("KP-01: 同步确认发送成功——返回 true，topic/key/messageId header 正确")
     void shouldSendSuccessfully() {
         when(kafkaTemplate.send(any(ProducerRecord.class)))
                 .thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
 
-        SendResult<String, FlashDealOrderMessage> result = producer.send(message());
+        boolean result = producer.send(message());
 
-        // 新契约：不等待 Kafka metadata，立即返回 null
-        assertThat(result).isNull();
+        assertThat(result).isTrue();
 
-        // 后台线程异步触达 KafkaTemplate（timeout 等待异步执行）
         ArgumentCaptor<ProducerRecord<String, FlashDealOrderMessage>> cap = ArgumentCaptor.forClass(ProducerRecord.class);
-        verify(kafkaTemplate, timeout(500)).send(cap.capture());
+        verify(kafkaTemplate).send(cap.capture());
         ProducerRecord<String, FlashDealOrderMessage> record = cap.getValue();
         assertThat(record.topic()).isEqualTo("flash-deal-orders");
         assertThat(record.key()).isEqualTo("1001");  // key = userId，保证同用户有序
@@ -74,17 +70,17 @@ class FlashDealProducerTest {
     }
 
     @Test
-    @DisplayName("KP-02: 发送失败被吞掉——send 返回 null 不抛异常（降级契约）")
-    void shouldSwallowFailureAsync() {
+    @DisplayName("KP-02: 发送失败——返回 false 不抛异常（调用方写 Outbox 补偿）")
+    void shouldReturnFalseOnFailure() {
         CompletableFuture<SendResult<String, FlashDealOrderMessage>> future = new CompletableFuture<>();
         future.completeExceptionally(new KafkaException("broker down"));
         when(kafkaTemplate.send(any(ProducerRecord.class))).thenReturn(future);
 
-        // 即使底层 future 异常完成，send 也不抛异常、返回 null（订单已同步落库兜底）
-        SendResult<String, FlashDealOrderMessage> result = producer.send(message());
+        // 投递失败：吞掉异常、返回 false，交由调用方写 Outbox PENDING
+        boolean result = producer.send(message());
 
-        assertThat(result).isNull();
-        verify(kafkaTemplate, timeout(500)).send(any(ProducerRecord.class));
+        assertThat(result).isFalse();
+        verify(kafkaTemplate).send(any(ProducerRecord.class));
     }
 
     @Test

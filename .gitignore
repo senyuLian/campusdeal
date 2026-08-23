@@ -42,6 +42,10 @@ logs/
 ### 本地敏感配置（API Key 等） ###
 src/main/resources/application-local.yaml
 
+### 压测 token 池（含有效登录凭证，运行时产物，勿提交） ###
+tools/.tokens.json
+tools/.tokens.smoke.json
+
 ### 本地保留的历史文档（已从 git 移除，仅本地参考，勿提交） ###
 # doc/ 跟踪 final-plan.md、performance-report.md 与 test-reports/（测试报告），其余历史文档保留本地
 doc/backend-dev-process.md

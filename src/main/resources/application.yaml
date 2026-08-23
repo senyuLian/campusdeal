@@ -37,21 +37,30 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      # 异步落库：acks=all 保证消息被 ISR 确认后才视为投递成功（Kafka 成为订单持久化点）
+      acks: all
       properties:
-        # P0-1 修复：Kafka 不可用时元数据获取最多阻塞 3s（默认 60s），避免秒杀接口长时间卡死
+        # Kafka 不可用时元数据获取最多阻塞 3s（默认 60s），避免秒杀接口长时间卡死
         max.block.ms: 3000
-        retries: 0
+        retries: 3
     consumer:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       auto-offset-reset: earliest
       enable-auto-commit: false
+      # 批量消费：让 broker 至少累计 50KB（约 500 条）或等待 1s 才返回一次 fetch，
+      # 避免 fetch.min.bytes=1 默认值「来一条就返回一条」的碎片化小批次。
+      # 实测默认值把 10000 单拆成 7418 个小批次（Redis pipeline/DB 往返各 7418 次），
+      # 聚合后批次数下降 1~2 个数量级，既提升吞吐、也大幅降低 Redis 连接 churn。
+      max-poll-records: 500
+      fetch-min-size: 51200
+      fetch-max-wait: 1000ms
       properties:
         spring.json.trusted.packages: com.campusdeal.mq
     listener:
       ack-mode: manual
-      # 无 Kafka 环境时禁止消费者容器自动启动，避免启动报错；接入 Kafka 后改为 true
-      auto-startup: false
+      # 异步落库：Consumer 成为唯一落库路径，必须启用
+      auto-startup: true
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:
