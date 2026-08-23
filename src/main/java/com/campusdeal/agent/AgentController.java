@@ -20,7 +20,7 @@ import jakarta.annotation.Resource;
  * Agent 接口（需登录：LoginInterceptor 保护，token 经 RefreshTokenInterceptor 写入 UserHolder）。
  *
  * <p>{@code POST /agent/chat} 返回 SSE 流（text/event-stream），事件名依次为
- * thinking / tool_call / tool_result / confirm / chunk / done。</p>
+ * thinking / tool_call / tool_result / confirm / chunk / done / error。</p>
  */
 @RestController
 @RequestMapping("/agent")

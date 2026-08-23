@@ -204,7 +204,7 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
 
     /**
      * P1-7：预热所有未过期秒杀活动的「剩余库存」到 Redis。
-     * 剩余库存 = 活动库存 - 已落库订单数（秒杀已改同步落库，订单数即已售数）。
+     * 剩余库存 = 活动库存 - 已落库订单数（秒杀已改 Kafka 异步落库，订单数即已售数）。
      * 使用 setIfAbsent，避免 Redis 未重启时覆盖在途库存。
      */
     public void preloadAllActiveStock() {

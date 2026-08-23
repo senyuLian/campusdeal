@@ -8,7 +8,7 @@ import lombok.NoArgsConstructor;
 /**
  * SSE 推送到前端的事件载荷。
  *
- * <p>type 取值：thinking / tool_call / tool_result / chunk / done / error。</p>
+ * <p>type 取值：thinking / tool_call / tool_result / confirm / chunk / done / error。</p>
  */
 @Data
 @Builder
