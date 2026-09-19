@@ -2,6 +2,7 @@ package com.campusdeal.cache;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
 
@@ -17,6 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 若仍是普通字段默认值（修复前），fpp=0.01、容量取活动数，断言将失败。</p>
  */
 @SpringBootTest
+@EnabledIfEnvironmentVariable(named = "CAMPUSDEAL_RUN_INTEGRATION", matches = "true")
 @TestPropertySource(properties = {
         "campusdeal.bloom.expected-insertions=50",
         "campusdeal.bloom.fpp=0.002",

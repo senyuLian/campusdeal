@@ -13,7 +13,7 @@ const BASE = 'http://localhost:8081';
 const DEAL_ID = 12;
 const STOCK = 10;
 const N = 30;
-const MYSQL_EXE = 'D:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe';
+const MYSQL_EXE = process.env.CAMPUSDEAL_MYSQL_EXE || 'mysql';
 const runId = Date.now().toString().slice(-8);   // 每次运行唯一，避免手机号复用
 
 let pass = 0, fail = 0;
@@ -50,7 +50,7 @@ function parseBulk(data) {
 }
 async function redis(cmd) {
     const args = cmd.trim().split(/\s+/);
-    return parseBulk(await redisRaw([['AUTH', '123456'], args]));
+    return parseBulk(await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], args]));
 }
 
 async function req(method, path, { token, body, query } = {}) {
@@ -71,7 +71,7 @@ async function req(method, path, { token, body, query } = {}) {
 
 function mysql(q) {
     try {
-        return execFileSync(MYSQL_EXE, ['-uroot', '-p123456', '-N', '-e', q], { encoding: 'utf8' }).trim();
+        return execFileSync(MYSQL_EXE, ['-uroot', '-p' + (process.env.CAMPUSDEAL_DB_PASSWORD || ''), '-N', '-e', q], { encoding: 'utf8' }).trim();
     } catch (e) {
         return 'ERR:' + ((e.stderr && e.stderr.toString()) || e.message || '');
     }

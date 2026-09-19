@@ -378,6 +378,13 @@
                         const respData = JSON.parse(data);
                         sessionId = respData.sessionId;
                         $('#session-badge').textContent = '会话: ' + sessionId.substring(0, 8);
+                        // The server only emits the verified final answer. Use
+                        // it as the authoritative value in case a future
+                        // transport adds intermediate events.
+                        if (typeof respData.answer === 'string' && respData.answer !== answer) {
+                            answer = respData.answer;
+                            if (currentContentDiv) currentContentDiv.innerHTML = renderMarkdown(answer);
+                        }
                     } catch (e) { /* ignore */ }
                 },
                 'error': function (data) {

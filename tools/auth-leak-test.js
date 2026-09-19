@@ -45,7 +45,7 @@ function parseBulk(data) {
 }
 async function redis(cmd) {
     const args = cmd.trim().split(/\s+/);
-    return parseBulk(await redisRaw([['AUTH', '123456'], args]));
+    return parseBulk(await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], args]));
 }
 async function login() {
     await req('POST', '/user/code', { query: { phone: PHONE } });

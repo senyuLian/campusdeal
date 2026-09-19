@@ -11,6 +11,7 @@ import com.campusdeal.dto.Result;
 import com.campusdeal.entity.Merchant;
 import com.campusdeal.mapper.MerchantMapper;
 import com.campusdeal.service.IMerchantService;
+import com.campusdeal.security.AuthorizationService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.campusdeal.utils.CacheClient;
 import com.campusdeal.utils.RedisData;
@@ -23,6 +24,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.domain.geo.GeoReference;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import jakarta.annotation.Resource;
 import org.springframework.util.CollectionUtils;
@@ -50,6 +53,36 @@ public class MerchantServiceImpl extends ServiceImpl<MerchantMapper, Merchant> i
 
     @Resource
     private CacheClient cacheClient;
+
+    @Resource
+    private AuthorizationService authorizationService;
+
+    /**
+     * Merchant creation is a protected operation.  The owner is derived from
+     * the token instead of trusting a client supplied owner_user_id.
+     */
+    @Override
+    @Transactional
+    public boolean save(Merchant merchant) {
+        var user = authorizationService.requireAuthenticated();
+        if (merchant == null) {
+            return false;
+        }
+        boolean updating = merchant.getId() != null;
+        if (updating) {
+            authorizationService.requireMerchantOwner(merchant.getId());
+        }
+        if (updating) {
+            merchant.setOwnerUserId(null);
+        } else if (!authorizationService.isAdmin(user) || merchant.getOwnerUserId() == null) {
+            merchant.setOwnerUserId(user.getId());
+        }
+        boolean saved = super.save(merchant);
+        if (saved) {
+            registerCacheInvalidation(merchant.getId(), null, merchant.getTypeId(), merchant);
+        }
+        return saved;
+    }
 
 
 
@@ -167,10 +200,16 @@ public class MerchantServiceImpl extends ServiceImpl<MerchantMapper, Merchant> i
         if (id == null) {
             return Result.fail("店铺id不能为空");
         }
+        authorizationService.requireMerchantOwner(id);
+        // The owner is immutable through the ordinary merchant edit path.
+        merchant.setOwnerUserId(null);
+        Merchant before = getById(id);
         //更新数据库
         updateById(merchant);
-        //删除缓存
-        stringRedisTemplate.delete(CACHE_MERCHANT_KEY + merchant.getId());
+        Merchant current = getById(id);
+        registerCacheInvalidation(id, before == null ? null : before.getTypeId(),
+                current == null ? merchant.getTypeId()
+                        : current.getTypeId(), current == null ? merchant : current);
         //返回结果
         return Result.ok();
     }
@@ -214,8 +253,18 @@ public class MerchantServiceImpl extends ServiceImpl<MerchantMapper, Merchant> i
         list.stream().skip( from).forEach(
                 geoResult -> {
                     //获取店铺id
-                    String shopId = geoResult.getContent().getName();
-                    ids.add(Long.valueOf(shopId));
+                    String shopId = geoResult.getContent() == null ? null : geoResult.getContent().getName();
+                    // Redis GEO members are untrusted; ignore malformed
+                    // members instead of throwing or concatenating them into
+                    // the dynamic FIELD ordering clause below.
+                    if (shopId == null || !shopId.matches("\\d+")) {
+                        return;
+                    }
+                    try {
+                        ids.add(Long.valueOf(shopId));
+                    } catch (NumberFormatException ignored) {
+                        return;
+                    }
                     Distance distance = geoResult.getDistance();
                     distanceMap.put(shopId, distance);
                 }
@@ -230,7 +279,10 @@ public class MerchantServiceImpl extends ServiceImpl<MerchantMapper, Merchant> i
         String idStr = StrUtil.join(",", ids);
         List<Merchant> shops = query().in("id", ids).last("ORDER BY FIELD(id," + idStr + ")").list();
         for (Merchant merchant : shops) {
-            merchant.setDistance(distanceMap.get(merchant.getId().toString()).getValue());
+            Distance distance = merchant.getId() == null ? null : distanceMap.get(merchant.getId().toString());
+            if (distance != null) {
+                merchant.setDistance(distance.getValue());
+            }
         }
 
         return Result.ok(shops);
@@ -247,12 +299,34 @@ public class MerchantServiceImpl extends ServiceImpl<MerchantMapper, Merchant> i
     @Override
     public Result queryNearby(Double x, Double y, Integer current) {
         int pageSize = SystemConstants.MAX_PAGE_SIZE;
-        List<Merchant> all = query().list();
+        if (current == null || current < 1) {
+            throw new com.campusdeal.exception.ValidationException("页码必须从1开始");
+        }
+        List<Merchant> all;
+        if (x == null || y == null) {
+            all = query().page(new Page<>(current, pageSize)).getRecords();
+        } else {
+            int candidateLimit = Math.min(Math.max(current * pageSize * 4, pageSize), 2000);
+            all = queryNearbyFromGeo(x, y, candidateLimit);
+            if (all.isEmpty()) {
+                // GEO is an acceleration index and may be cold after a Redis
+                // loss. Fall back to an indexed bounding box, still bounded
+                // before exact distance sorting.
+                double latDelta = 5000.0 / 111_000.0;
+                double lonDelta = latDelta / Math.max(Math.cos(Math.toRadians(y)), 0.1);
+                all = query().ge("y", y - latDelta).le("y", y + latDelta)
+                        .ge("x", x - lonDelta).le("x", x + lonDelta)
+                        .last("LIMIT " + candidateLimit).list();
+            }
+        }
         if (CollectionUtils.isEmpty(all)) {
             return Result.ok(Collections.emptyList());
         }
         // 带坐标时按距离升序（无坐标按默认顺序）
         if (x != null && y != null) {
+            // Mapper implementations and test doubles are allowed to return an
+            // immutable list (for example List.of(...)); copy before sorting.
+            all = new ArrayList<>(all);
             all.forEach(m -> m.setDistance(calcDistanceMeters(x, y, m.getX(), m.getY())));
             all.sort(Comparator.comparingDouble(
                     m -> m.getDistance() == null ? Double.MAX_VALUE : m.getDistance()));
@@ -263,6 +337,72 @@ public class MerchantServiceImpl extends ServiceImpl<MerchantMapper, Merchant> i
             return Result.ok(Collections.emptyList());
         }
         return Result.ok(new ArrayList<>(all.subList(from, end)));
+    }
+
+    private List<Merchant> queryNearbyFromGeo(Double x, Double y, int candidateLimit) {
+        try {
+            GeoResults<RedisGeoCommands.GeoLocation<String>> results = stringRedisTemplate.opsForGeo()
+                    .radius(MERCHANT_GEO_ALL_KEY, new Circle(new Point(x, y), new Distance(5000)),
+                            RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs()
+                                    .includeDistance().sortAscending().limit(candidateLimit));
+            if (results == null || results.getContent().isEmpty()) return Collections.emptyList();
+            List<String> ids = results.getContent().stream()
+                    .map(GeoResult::getContent)
+                    .map(RedisGeoCommands.GeoLocation::getName)
+                    // GEO members are untrusted Redis data. Keep the dynamic
+                    // FIELD ordering clause numeric-only so a corrupted or
+                    // poisoned member can never become SQL text.
+                    .filter(Objects::nonNull)
+                    .filter(id -> id.matches("\\d+"))
+                    .toList();
+            if (ids.isEmpty()) return Collections.emptyList();
+            String idStr = StrUtil.join(",", ids);
+            List<Merchant> merchants = query().in("id", ids).last("ORDER BY FIELD(id," + idStr + ")").list();
+            Map<String, Distance> distances = results.getContent().stream()
+                    .filter(result -> result.getContent() != null && result.getDistance() != null)
+                    .collect(Collectors.toMap(result -> result.getContent().getName(),
+                            GeoResult::getDistance, (left, right) -> left, LinkedHashMap::new));
+            merchants.forEach(merchant -> {
+                Distance distance = distances.get(String.valueOf(merchant.getId()));
+                if (distance != null) merchant.setDistance(distance.getValue());
+            });
+            return merchants;
+        } catch (Exception e) {
+            // Redis GEO is optional; the caller will use the indexed DB path.
+            return Collections.emptyList();
+        }
+    }
+
+    private void registerCacheInvalidation(Long merchantId, Long oldTypeId, Long newTypeId, Merchant geoMerchant) {
+        Runnable invalidate = () -> {
+            stringRedisTemplate.delete(CACHE_MERCHANT_KEY + merchantId);
+            if (oldTypeId != null) {
+                stringRedisTemplate.delete(MERCHANT_GEO_KEY + oldTypeId);
+            }
+            if (newTypeId != null && !Objects.equals(oldTypeId, newTypeId)) {
+                stringRedisTemplate.delete(MERCHANT_GEO_KEY + newTypeId);
+            }
+            // Rebuild the bounded GEO indexes after the transaction commits.
+            stringRedisTemplate.delete(MERCHANT_GEO_ALL_KEY);
+            if (geoMerchant != null && geoMerchant.getX() != null && geoMerchant.getY() != null) {
+                Point point = new Point(geoMerchant.getX(), geoMerchant.getY());
+                stringRedisTemplate.opsForGeo().add(MERCHANT_GEO_ALL_KEY, point, String.valueOf(merchantId));
+                if (geoMerchant.getTypeId() != null) {
+                    stringRedisTemplate.opsForGeo().add(MERCHANT_GEO_KEY + geoMerchant.getTypeId(),
+                            point, String.valueOf(merchantId));
+                }
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    invalidate.run();
+                }
+            });
+        } else {
+            invalidate.run();
+        }
     }
 
     /**

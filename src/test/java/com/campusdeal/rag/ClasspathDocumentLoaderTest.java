@@ -42,7 +42,7 @@ class ClasspathDocumentLoaderTest {
         List<DocumentChunk> chunks = loader.chunkDocument(doc);
 
         assertThat(chunks).hasSizeGreaterThan(1);
-        assertThat(chunks.get(0).getChunkId()).isEqualTo("d1-c0");
+        assertThat(chunks.get(0).getChunkId()).isEqualTo("d1#0");
         assertThat(chunks.get(0).getDocId()).isEqualTo("d1");
         assertThat(chunks.get(0).getChunkIndex()).isZero();
     }
@@ -52,5 +52,33 @@ class ClasspathDocumentLoaderTest {
     void dl03_blankDocument() {
         Document doc = Document.builder().id("d1").title("空").content("   ").source("faq").build();
         assertThat(loader.chunkDocument(doc)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("DL-04 短文本与恰好块长只生成一个块")
+    void dl04_shortAndExactBoundary() {
+        Document shortDoc = Document.builder().id("short").content("a".repeat(20)).build();
+        Document exactDoc = Document.builder().id("exact").content("b".repeat(ClasspathDocumentLoader.CHUNK_SIZE)).build();
+
+        assertThat(loader.chunkDocument(shortDoc)).hasSize(1)
+                .first().extracting(DocumentChunk::getText).isEqualTo("a".repeat(20));
+        assertThat(loader.chunkDocument(exactDoc)).hasSize(1)
+                .first().extracting(DocumentChunk::getText).isEqualTo("b".repeat(ClasspathDocumentLoader.CHUNK_SIZE));
+    }
+
+    @Test
+    @DisplayName("DL-05 长文本块索引连续，末块到达结尾后立即停止")
+    void dl05_longDocumentTerminates() {
+        String text = "0123456789".repeat(100);
+        Document doc = Document.builder().id("long").content(text).build();
+
+        List<DocumentChunk> chunks = loader.chunkDocument(doc);
+
+        assertThat(chunks).isNotEmpty();
+        assertThat(chunks).extracting(DocumentChunk::getChunkIndex)
+                .containsExactlyElementsOf(IntStream.range(0, chunks.size()).boxed().toList());
+        assertThat(chunks.get(chunks.size() - 1).getText()).isNotEmpty();
+        assertThat(chunks.get(chunks.size() - 1).getText()).doesNotEndWith(
+                chunks.size() > 1 ? chunks.get(chunks.size() - 2).getText() : "__never__");
     }
 }

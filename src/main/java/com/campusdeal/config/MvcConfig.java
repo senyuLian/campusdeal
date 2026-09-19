@@ -27,10 +27,14 @@ public class MvcConfig implements WebMvcConfigurer {
                         "/post/of/user",
                         // 用户公开主页（GET /user/public/{id}）
                         "/user/public/*",
-                        "/merchant/**",
+                        "/merchant/*",
+                        "/merchant/of/type",
+                        "/merchant/nearby",
+                        "/merchant/of/name",
                         "/merchant-type/**",
-                        "/upload/**",
-                        "/coupon/**",
+                        "/coupon/list/*",
+                        "/coupon/flash/list",
+                        "/coupon/list/all",
                         // Module 06：聊天 UI 静态资源（页面内通过 fetch 携带 token 调 /agent/**）
                         "/chat.html",
                         "/css/**",

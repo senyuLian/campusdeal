@@ -35,7 +35,7 @@ function redisRaw(commands) {
 }
 function redis(cmd) {
     const args = cmd.trim().split(/\s+/);
-    return redisRaw([['AUTH', '123456'], args]);
+    return redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], args]);
 }
 
 async function req(method, path, { token, body, query } = {}) {

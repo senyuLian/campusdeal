@@ -10,8 +10,12 @@ import com.campusdeal.service.IFollowService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.campusdeal.service.IUserService;
 import com.campusdeal.utils.UserHolder;
+import com.campusdeal.security.AuthorizationService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import jakarta.annotation.Resource;
 
@@ -37,26 +41,39 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     @Resource
     private IUserService userService;
 
+    @Resource
+    private AuthorizationService authorizationService;
+
     @Override
+    @Transactional
     public Result follow(Long followUserId, Boolean isFollow) {
         //获取当前用户
-        Long userId = UserHolder.getUser().getId();
+        Long userId = authorizationService.requireAuthenticated().getId();
+        if (followUserId == null || isFollow == null) {
+            throw new com.campusdeal.exception.ValidationException("关注参数不合法");
+        }
+        if (Boolean.TRUE.equals(isFollow) && userId.equals(followUserId)) {
+            throw new com.campusdeal.exception.ValidationException("不能关注自己");
+        }
 
         //判断当前用户是取关还是关注
-        if (isFollow) {
-            Follow follow = new Follow();
-            follow.setUserId(userId);
-            follow.setFollowUserId(followUserId);
-            boolean success = save(follow);
-            if (success) {
-                stringRedisTemplate.opsForSet().add("follows:" + userId, followUserId.toString());
-            }
+        Runnable mirror = Boolean.TRUE.equals(isFollow)
+                ? () -> stringRedisTemplate.opsForSet().add("follows:" + userId, followUserId.toString())
+                : () -> stringRedisTemplate.opsForSet().remove("follows:" + userId, followUserId.toString());
+        if (Boolean.TRUE.equals(isFollow)) {
+            getBaseMapper().insertIgnore(userId, followUserId);
+        } else {
+            remove(new QueryWrapper<Follow>().eq("user_id", userId).eq("follow_user_id", followUserId));
         }
-        else {
-            boolean success = remove(new QueryWrapper<Follow>().eq("user_id", userId).eq("follow_user_id", followUserId));
-            if (success) {
-                stringRedisTemplate.opsForSet().remove("follows:" + userId, followUserId.toString());
-            }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    mirror.run();
+                }
+            });
+        } else {
+            mirror.run();
         }
 
         return Result.ok();
@@ -64,14 +81,14 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
     @Override
     public Result isFollow(Long followUserId) {
-        Long userId = UserHolder.getUser().getId();
+        Long userId = authorizationService.requireAuthenticated().getId();
         Long count = query().eq("user_id", userId).eq("follow_user_id", followUserId).count();
         return Result.ok(count > 0);
     }
 
     @Override
     public Result followCommons(Long followUserId) {
-        Long userId = UserHolder.getUser().getId();
+        Long userId = authorizationService.requireAuthenticated().getId();
         String key = "follows:" + userId;
         String key2 = "follows:" + followUserId;
         Set<String> intersect = stringRedisTemplate.opsForSet().intersect(key, key2);

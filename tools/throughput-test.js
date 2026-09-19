@@ -40,8 +40,8 @@ const { execFileSync } = require('child_process');
 const net = require('net');
 
 const BASE = 'http://localhost:8081';
-const REDIS_AUTH = '123456';
-const DEFAULT_MYSQL_EXE = 'D:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe';
+const REDIS_AUTH = process.env.CAMPUSDEAL_REDIS_PASSWORD || '';
+const DEFAULT_MYSQL_EXE = process.env.CAMPUSDEAL_MYSQL_EXE || 'mysql';
 
 // ---------- 参数解析 ----------
 function parseArgs(argv) {
@@ -141,7 +141,7 @@ function loadTokens(p) {
 function mysqlCount(voucherId, mysqlExe) {
     if (!mysqlExe || !fs.existsSync(mysqlExe)) return null;
     try {
-        const out = execFileSync(mysqlExe, ['-uroot', '-p123456', '-N', '-e',
+            const out = execFileSync(mysqlExe, ['-uroot', '-p' + (process.env.CAMPUSDEAL_DB_PASSWORD || ''), '-N', '-e',
             `SELECT COUNT(*) FROM campusdeal.tb_voucher_order WHERE voucher_id=${voucherId};`], { encoding: 'utf8' });
         return parseInt(out.trim(), 10);
     } catch (e) {

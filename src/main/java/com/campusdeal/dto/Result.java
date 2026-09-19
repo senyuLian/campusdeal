@@ -1,6 +1,5 @@
 package com.campusdeal.dto;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -8,12 +7,24 @@ import java.util.List;
 
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class Result {
     private Boolean success;
     private String errorMsg;
     private Object data;
     private Long total;
+    private String errorCode;
+
+    public Result(Boolean success, String errorMsg, Object data, Long total) {
+        this(success, errorMsg, data, total, null);
+    }
+
+    public Result(Boolean success, String errorMsg, Object data, Long total, String errorCode) {
+        this.success = success;
+        this.errorMsg = errorMsg;
+        this.data = data;
+        this.total = total;
+        this.errorCode = errorCode;
+    }
 
     public static Result ok(){
         return new Result(true, null, null, null);
@@ -26,5 +37,9 @@ public class Result {
     }
     public static Result fail(String errorMsg){
         return new Result(false, errorMsg, null, null);
+    }
+
+    public static Result fail(String errorCode, String errorMsg) {
+        return new Result(false, errorMsg, null, null, errorCode);
     }
 }

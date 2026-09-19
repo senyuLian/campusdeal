@@ -8,14 +8,19 @@ import com.alibaba.otter.canal.protocol.CanalEntry.RowChange;
 import com.alibaba.otter.canal.protocol.CanalEntry.RowData;
 import com.alibaba.otter.canal.protocol.Message;
 import com.campusdeal.utils.RedisConstants;
+import com.campusdeal.config.ReliabilityMetrics;
+import com.campusdeal.security.SensitiveLogSanitizer;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.context.SmartLifecycle;
 
 import jakarta.annotation.Resource;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Canal 客户端实现：订阅 MySQL binlog，将变更转化为 Redis 缓存失效
@@ -27,12 +32,15 @@ import java.util.List;
  */
 @Slf4j
 @Component
-public class CanalClientImpl implements CanalClient {
+@ConditionalOnProperty(prefix = "campusdeal.canal", name = "enabled", havingValue = "true")
+public class CanalClientImpl implements CanalClient, SmartLifecycle {
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
     @Resource
     private CanalConnectorFactory canalConnectorFactory;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ReliabilityMetrics reliabilityMetrics;
 
     @Value("${campusdeal.canal.host:localhost}")
     private String canalHost = "localhost";
@@ -47,6 +55,9 @@ public class CanalClientImpl implements CanalClient {
     private volatile boolean running = false;
     private volatile Thread canalThread;
     private volatile CanalConnector connector;
+    private final AtomicLong reconnectCount = new AtomicLong();
+    private final AtomicLong lastBatchSize = new AtomicLong();
+    private final AtomicLong lastEventAt = new AtomicLong();
 
     @Override
     public void start() {
@@ -74,6 +85,7 @@ public class CanalClientImpl implements CanalClient {
                 retryCount = 0;
                 log.info("Canal client connected to {}:{}, destination={}",
                         canalHost, canalPort, destination);
+                metric("connected");
 
                 while (running) {
                     Message message = conn.getWithoutAck(1000);
@@ -93,9 +105,11 @@ public class CanalClientImpl implements CanalClient {
                     break;
                 }
                 retryCount++;
+                reconnectCount.incrementAndGet();
+                metric("reconnect");
                 long backoff = Math.min(reconnectBaseDelayMs * retryCount, 30_000L);
                 log.warn("Canal client connection lost (retry #{}), reconnect in {}ms: {}",
-                        retryCount, backoff, e.getMessage());
+                        retryCount, backoff, SensitiveLogSanitizer.exceptionSummary(e));
                 try {
                     Thread.sleep(backoff);
                 } catch (InterruptedException ie) {
@@ -120,7 +134,8 @@ public class CanalClientImpl implements CanalClient {
 
     /** 心跳批（batchId=-1）或空批 → 不处理（package-private 便于单测） */
     boolean isHeartbeatOrEmpty(Message message) {
-        return message.getId() == -1 || message.getEntries().isEmpty();
+        return message == null || message.getId() == -1
+                || message.getEntries() == null || message.getEntries().isEmpty();
     }
 
     /** 当前 canal 线程（package-private 便于单测断言线程身份/幂等） */
@@ -130,6 +145,10 @@ public class CanalClientImpl implements CanalClient {
 
     /** 处理一批 binlog 事件（package-private 便于单元测试） */
     void handleEntries(List<Entry> entries) {
+        if (entries == null || entries.isEmpty()) return;
+        lastBatchSize.set(entries.size());
+        lastEventAt.set(System.currentTimeMillis());
+        metric("batch");
         for (Entry entry : entries) {
             if (entry.getEntryType() != EntryType.ROWDATA) continue;
 
@@ -137,44 +156,65 @@ public class CanalClientImpl implements CanalClient {
             try {
                 rowChange = RowChange.parseFrom(entry.getStoreValue());
             } catch (Exception e) {
-                continue;
+                // Do not acknowledge a batch whose row image cannot be
+                // interpreted; Canal will redeliver it after reconnect.
+                throw new IllegalStateException("Unable to parse Canal row event", e);
             }
 
             String table = entry.getHeader().getTableName();
             for (RowData rowData : rowChange.getRowDatasList()) {
-                invalidateCache(table, rowData);
+                invalidateCache(table, rowChange.getEventType(), rowData);
             }
         }
     }
 
     /** 根据表名 + 变更行，删除对应 Redis 缓存 key（package-private 便于单元测试） */
     void invalidateCache(String table, RowData rowData) {
-        // 获取变更后的行数据
-        List<Column> columns = rowData.getAfterColumnsList();
+        // Backwards-compatible helper used by existing tests.
+        invalidateCache(table, com.alibaba.otter.canal.protocol.CanalEntry.EventType.UPDATE, rowData);
+    }
+
+    void invalidateCache(String table, com.alibaba.otter.canal.protocol.CanalEntry.EventType eventType,
+                         RowData rowData) {
+        List<Column> columns = eventType == com.alibaba.otter.canal.protocol.CanalEntry.EventType.DELETE
+                ? rowData.getBeforeColumnsList() : rowData.getAfterColumnsList();
+        if (columns == null || columns.isEmpty()) {
+            columns = rowData.getBeforeColumnsList();
+        }
+        String keyColumn = "tb_seckill_voucher".equals(table) ? "voucher_id" : "id";
         String id = columns.stream()
-                .filter(c -> "id".equals(c.getName()))
-                .findFirst()
-                .map(Column::getValue)
-                .orElse(null);
+                .filter(c -> keyColumn.equals(c.getName()) || ("id".equals(c.getName()) && c.getIsKey()))
+                .findFirst().map(Column::getValue).orElse(null);
         if (id == null) return;
 
-        switch (table) {
+            switch (table) {
             case "tb_voucher":
+                // Voucher changes affect the merchant's derived coupon view.
+                String shopId = columnValue(columns, "shop_id");
+                stringRedisTemplate.delete("coupon:list:shop:" + (shopId == null ? id : shopId));
+                log.debug("Canal invalidated voucher-derived views: {}", id);
+                metric("invalidated");
+                break;
             case "tb_seckill_voucher":
-                // 秒杀券/库存变更 → 清除相关缓存
-                stringRedisTemplate.delete(RedisConstants.CACHE_MERCHANT_KEY + id);
-                stringRedisTemplate.delete(RedisConstants.FLASH_DEAL_STOCK_KEY + id);
-                log.debug("Canal invalidated cache for voucher: {}", id);
+                // The durable acceptance path owns stock. Never delete its
+                // authoritative live key as a generic cache reaction.
+                stringRedisTemplate.delete("coupon:list:shop:" + id);
+                log.debug("Canal invalidated flash-deal derived views: {}", id);
+                metric("invalidated");
                 break;
             case "tb_shop":
-                // 商户信息变更 → 清除商户缓存
                 stringRedisTemplate.delete(RedisConstants.CACHE_MERCHANT_KEY + id);
-                log.debug("Canal invalidated cache for merchant: {}", id);
+                log.debug("Canal invalidated merchant: {}", id);
+                metric("invalidated");
                 break;
             default:
-                // 非关注表，忽略
                 break;
         }
+    }
+
+    private String columnValue(List<Column> columns, String name) {
+        return columns.stream().filter(c -> name.equals(c.getName()))
+                .findFirst().map(Column::getValue).orElse(null);
     }
 
     @Override
@@ -198,6 +238,39 @@ public class CanalClientImpl implements CanalClient {
                 .running(running)
                 .host(canalHost)
                 .port(canalPort)
+                .reconnectCount(reconnectCount.get())
+                .lastBatchSize(lastBatchSize.get())
+                .lastEventAt(lastEventAt.get())
                 .build();
+    }
+
+    @Override
+    public boolean isAutoStartup() {
+        return true;
+    }
+
+    @Override
+    public boolean isRunning() {
+        return running;
+    }
+
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE;
+    }
+
+    private void metric(String outcome) {
+        if (reliabilityMetrics != null) {
+            reliabilityMetrics.increment("campusdeal.canal.events", outcome);
+        }
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        try {
+            stop();
+        } finally {
+            callback.run();
+        }
     }
 }

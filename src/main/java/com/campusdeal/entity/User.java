@@ -52,6 +52,9 @@ public class User implements Serializable {
      */
     private String icon = "";
 
+    /** USER / ADMIN; ownership checks must never infer authority from the request body. */
+    private String role = "USER";
+
     /**
      * 创建时间
      */

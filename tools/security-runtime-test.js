@@ -48,7 +48,7 @@ function parseBulk(data) {
     return null;
 }
 async function redisCmd(...cmd) {
-    return parseBulk(await redisRaw([['AUTH', '123456'], cmd]));
+    return parseBulk(await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], cmd]));
 }
 async function req(method, path, { token, body, query } = {}) {
     let url = BASE + path;
@@ -129,12 +129,12 @@ async function main() {
     // 教训：HSET/HGET 各建立一次连接、最长等 500ms 才解析返回；若在写 tokens=0 时就取 now，
     // 等到真正发 chat 时可能已过去 ~1s+（此前 3s 超时下甚至 ~6-9s），而令牌桶每 6s 补 1 个，
     // 桶会「合法」恢复 1 个令牌 → 请求放行 → SR-03 误报。因此 lastRefill 必须在紧邻 chat 前刷新。
-    await redisRaw([['AUTH', '123456'],
+    await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''],
         ['HMSET', `ratelimit:user:${USER_ID}`, 'tokens', '0', 'lastRefill', String(Date.now())]]);
     const hgetTokens = await redisCmd('HGET', `ratelimit:user:${USER_ID}`, 'tokens');
     const hgetLast = await redisCmd('HGET', `ratelimit:user:${USER_ID}`, 'lastRefill');
     const nowMs = Date.now();
-    await redisRaw([['AUTH', '123456'], ['HSET', `ratelimit:user:${USER_ID}`, 'lastRefill', String(nowMs)]]);
+    await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], ['HSET', `ratelimit:user:${USER_ID}`, 'lastRefill', String(nowMs)]]);
     console.log(`   [debug] tokens=${hgetTokens} lastRefill=${hgetLast} now=${nowMs} (chat 前刷新 lastRefill)`);
     const r3 = await chat(token, '你好', 'm9-rl-' + Date.now());
     report('SR-03 T6：令牌桶耗尽后请求被限流', r3.hasError && r3.errorData.includes('过于频繁'),

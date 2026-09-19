@@ -1,13 +1,20 @@
 package com.campusdeal.rag;
 
 import jakarta.annotation.Resource;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.campusdeal.config.ReliabilityMetrics;
+import com.campusdeal.security.SensitiveLogSanitizer;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.ArrayList;
 import java.util.stream.Collectors;
 
 /**
@@ -29,18 +36,28 @@ public class HybridRetrieverImpl implements HybridRetriever {
     @Resource
     private TextEmbedder embedder;
 
+    @Autowired(required = false)
+    private ReliabilityMetrics reliabilityMetrics;
+
+    @Value("${campusdeal.pgvector.enabled:false}")
+    private boolean vectorEnabled = false;
+
     /** RRF 融合参数（TREC 最佳实践） */
     private static final double RRF_K = 60;
+    /** Avoid letting one source document consume the entire result window. */
+    private static final int MAX_CHUNKS_PER_DOCUMENT = 2;
 
     @Override
     public List<RetrievalResult> retrieve(String query, int topK) {
+        int boundedTopK = Math.max(1, Math.min(topK, 100));
         // 各自多取一些，融合后截断
-        List<RetrievalResult> bm25Results = bm25Search(query, topK * 2);
-        List<RetrievalResult> vectorResults = vectorSearch(query, topK * 2);
-        List<RetrievalResult> fused = rrfFusion(bm25Results, vectorResults, topK);
+        List<RetrievalResult> bm25Results = bm25Search(query, boundedTopK * 2);
+        List<RetrievalResult> vectorResults = vectorSearch(query, boundedTopK * 2);
+        List<RetrievalResult> fused = rrfFusion(bm25Results, vectorResults, boundedTopK);
 
-        log.debug("Hybrid retrieval: query='{}', bm25={}, vector={}, fused={}",
-                query, bm25Results.size(), vectorResults.size(), fused.size());
+        log.debug("Hybrid retrieval: queryHash={}, queryLength={}, bm25={}, vector={}, fused={}",
+                Integer.toHexString(query == null ? 0 : query.hashCode()),
+                query == null ? 0 : query.length(), bm25Results.size(), vectorResults.size(), fused.size());
         return fused;
     }
 
@@ -58,20 +75,27 @@ public class HybridRetrieverImpl implements HybridRetriever {
     }
 
     private List<RetrievalResult> vectorSearch(String query, int topK) {
+        if (!vectorEnabled) {
+            if (reliabilityMetrics != null) reliabilityMetrics.increment("campusdeal.rag.search", "vector_disabled");
+            return List.of();
+        }
         try {
             float[] queryEmbedding = embedder.embed(query);
             List<VectorResult> vectorResults = vectorStore.search(queryEmbedding, topK);
             return vectorResults.stream()
                     .map(vr -> RetrievalResult.builder()
-                            .docId(vr.getDocId())
+                    .docId(vr.getDocId())
+                            .title(vr.getTitle())
                             .content(vr.getContent())
                             .score(vr.getCosineSimilarity())
+                            .source(vr.getSource())
                             .subScores(Map.of("vector", vr.getCosineSimilarity()))
                             .build())
                     .collect(Collectors.toList());
         } catch (Exception e) {
             // Embedding API / PGVector 不可用时降级为纯 BM25，不影响关键词检索
-            log.warn("向量检索不可用，降级为纯 BM25: {}", e.getMessage());
+            log.warn("向量检索不可用，降级为纯 BM25: {}", SensitiveLogSanitizer.exceptionSummary(e));
+            if (reliabilityMetrics != null) reliabilityMetrics.increment("campusdeal.rag.search", "vector_degraded");
             return List.of();
         }
     }
@@ -84,37 +108,69 @@ public class HybridRetrieverImpl implements HybridRetriever {
             List<RetrievalResult> vectorResults,
             int topK) {
 
-        Map<String, Double> fusionScores = new HashMap<>();
         Map<String, RetrievalResult> merged = new LinkedHashMap<>();
+        Map<String, Double> fusionScores = new HashMap<>();
 
         for (int i = 0; i < bm25Results.size(); i++) {
             RetrievalResult r = bm25Results.get(i);
             double rrf = 1.0 / (RRF_K + i + 1);
             fusionScores.merge(r.getDocId(), rrf, Double::sum);
-            merged.putIfAbsent(r.getDocId(), r);
+            mergeResult(merged, r);
         }
         for (int i = 0; i < vectorResults.size(); i++) {
             RetrievalResult r = vectorResults.get(i);
             double rrf = 1.0 / (RRF_K + i + 1);
             fusionScores.merge(r.getDocId(), rrf, Double::sum);
-            merged.putIfAbsent(r.getDocId(), r);
+            mergeResult(merged, r);
         }
 
-        return fusionScores.entrySet().stream()
-                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
-                .limit(topK)
-                .map(entry -> {
+        List<RetrievalResult> results = new ArrayList<>();
+        Map<String, Integer> documentCounts = new HashMap<>();
+        fusionScores.entrySet().stream()
+                // Stable tie-breaking matters when both channels assign the
+                // same rank score to different canonical passages.
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .forEach(entry -> {
+                    if (results.size() >= topK) return;
                     RetrievalResult r = merged.get(entry.getKey());
+                    String documentId = documentIdOf(entry.getKey());
+                    int count = documentCounts.getOrDefault(documentId, 0);
+                    if (count >= MAX_CHUNKS_PER_DOCUMENT) return;
                     r.setScore(entry.getValue());
-                    return r;
-                })
-                .collect(Collectors.toList());
+                    results.add(r);
+                    documentCounts.put(documentId, count + 1);
+                });
+        return results;
+    }
+
+    private String documentIdOf(String canonicalId) {
+        if (canonicalId == null) return "";
+        int separator = canonicalId.lastIndexOf('#');
+        return separator > 0 ? canonicalId.substring(0, separator) : canonicalId;
+    }
+
+    private void mergeResult(Map<String, RetrievalResult> merged, RetrievalResult incoming) {
+        RetrievalResult current = merged.get(incoming.getDocId());
+        if (current == null) {
+            Map<String, Double> scores = new LinkedHashMap<>();
+            if (incoming.getSubScores() != null) scores.putAll(incoming.getSubScores());
+            incoming.setSubScores(scores);
+            merged.put(incoming.getDocId(), incoming);
+            return;
+        }
+        if (current.getTitle() == null) current.setTitle(incoming.getTitle());
+        if (current.getContent() == null) current.setContent(incoming.getContent());
+        if (current.getSource() == null) current.setSource(incoming.getSource());
+        if (incoming.getSubScores() != null) current.getSubScores().putAll(incoming.getSubScores());
     }
 
     @Override
     public void index(Document document) {
-        float[] embedding = embedder.embed(document.getContent());
-        vectorStore.insert(document.getId(), embedding, buildMetadata(document));
+        if (vectorEnabled) {
+            float[] embedding = embedder.embed(document.getContent());
+            vectorStore.insert(document.getId(), embedding, buildMetadata(document));
+        }
         bm25Index.index(document);
     }
 
@@ -127,14 +183,16 @@ public class HybridRetrieverImpl implements HybridRetriever {
             try {
                 index(d);
             } catch (Exception e) {
-                log.warn("索引文档失败 {}: {}", d.getId(), e.getMessage());
+                log.warn("索引文档失败 {}: {}", d.getId(), SensitiveLogSanitizer.exceptionSummary(e));
             }
         }
     }
 
     @Override
     public void delete(String docId) {
-        vectorStore.delete(docId);
+        if (vectorEnabled) {
+            vectorStore.delete(docId);
+        }
         bm25Index.delete(docId);
     }
 

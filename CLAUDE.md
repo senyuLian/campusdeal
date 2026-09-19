@@ -15,9 +15,9 @@ A campus-focused O2O platform: merchant discovery / flash deals / social feed / 
 ## Environment
 
 - Port: `8081`
-- MySQL: `localhost:3306/campusdeal`, root / 123456 (see `application.yaml`)
-- Redis: `localhost:6379`, password `123456`
-- Image upload dir: `D:\program\develop\redis_project\nginx-1.18.0\html\campusdeal\imgs` (`SystemConstants.IMAGE_UPLOAD_DIR`)
+- MySQL: configure `CAMPUSDEAL_DB_URL`, `CAMPUSDEAL_DB_USERNAME`, and `CAMPUSDEAL_DB_PASSWORD`
+- Redis: configure `CAMPUSDEAL_REDIS_HOST`, `CAMPUSDEAL_REDIS_PORT`, and `CAMPUSDEAL_REDIS_PASSWORD`
+- Image upload dir: configure `CAMPUSDEAL_UPLOAD_ROOT` (default `./data/uploads`)
 
 ## Project Structure
 
@@ -75,10 +75,10 @@ Extend `ServiceImpl` to get `getById` / `query().eq(...)` for free.
 
 ## Build & Run
 
-⚠️ **System default JDK is 25 (`D:\program\develop\jdk`), but project requires Java 17**. Compiling with system JDK will fail because Lombok 1.18.30 does not support JDK 25 (symptom: `@Data` getters/setters "cannot find symbol").
+⚠️ **The system default JDK may be newer than the project's required Java 17**. Compile with a Java 17 distribution because the pinned Lombok version may not support newer JDKs (symptom: `@Data` getters/setters "cannot find symbol").
 
 ```bash
-export JAVA_HOME="D:/program/develop/jdks/jdk17"
+export JAVA_HOME="<path-to-jdk17>"
 mvn compile
 mvn spring-boot:run
 ```

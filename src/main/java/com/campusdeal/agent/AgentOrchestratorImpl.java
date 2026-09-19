@@ -10,8 +10,11 @@ import com.campusdeal.security.RateLimiter;
 import com.campusdeal.security.SanitizedInput;
 import com.campusdeal.security.SecurityViolationException;
 import com.campusdeal.security.SensitiveGuard;
+import com.campusdeal.security.SensitiveLogSanitizer;
 import com.campusdeal.security.VerificationContext;
 import com.campusdeal.security.VerificationResult;
+import com.campusdeal.config.ReliabilityMetrics;
+import com.campusdeal.exception.UnauthorizedException;
 import com.campusdeal.utils.UserHolder;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
@@ -27,6 +30,7 @@ import org.bsc.langgraph4j.StateGraph;
 import org.bsc.langgraph4j.action.AsyncEdgeAction;
 import org.bsc.langgraph4j.action.AsyncNodeAction;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -40,8 +44,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -82,6 +90,28 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
     @Value("${campusdeal.agent.max-iterations:5}")
     private int maxIterations = 5;
 
+    @Value("${campusdeal.agent.turn-timeout-ms:35000}")
+    private long turnTimeoutMs = 35_000L;
+
+    @Value("${campusdeal.agent.enabled:true}")
+    private boolean agentEnabled = true;
+
+    @Autowired(required = false)
+    @org.springframework.beans.factory.annotation.Qualifier("agentExecutor")
+    private ExecutorService agentExecutor;
+
+    @Autowired(required = false)
+    private ReliabilityMetrics reliabilityMetrics;
+
+    /** Bounded fallback for isolated/manual construction outside Spring. */
+    private static final ExecutorService FALLBACK_EXECUTOR = new ThreadPoolExecutor(
+            2, 2, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8),
+            runnable -> {
+                Thread thread = new Thread(runnable, "agent-turn-fallback");
+                thread.setDaemon(true);
+                return thread;
+            }, new ThreadPoolExecutor.AbortPolicy());
+
     private StateGraph<AgentState> graph;
 
     @PostConstruct
@@ -98,8 +128,11 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
         // Module 06：输入被拒绝（安全违规）时直接结束，不再进入 LLM
         g.addConditionalEdges("sanitize", AsyncEdgeAction.edge_async(this::routeAfterSanitize),
                 Map.of("think", "think", "end", StateGraph.END));
+        // The final answer is already produced by the last synchronous think
+        // call. Route directly to verification so a turn is never generated
+        // twice solely to switch from reasoning to streaming output.
         g.addConditionalEdges("think", AsyncEdgeAction.edge_async(this::routeAfterThink),
-                Map.of("act", "act", "answer", "answer", "finish", "finish"));
+                Map.of("act", "act", "answer", "verify", "finish", "finish"));
         g.addEdge("act", "think");
         g.addEdge("answer", "verify");
         g.addEdge("finish", "verify");
@@ -111,10 +144,28 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
 
     @Override
     public SseEmitter chat(String userMessage, String sessionId) {
+        if (!agentEnabled) {
+            SseEmitter disabled = new SseEmitter(1_000L);
+            try {
+                disabled.send(SseEmitter.event().name("error").data("Agent 功能当前已禁用。"));
+            } catch (IOException ignored) {
+            }
+            disabled.complete();
+            return disabled;
+        }
         Long userId = UserHolder.getUser() == null ? null : UserHolder.getUser().getId();
+        if (userId == null) {
+            SseEmitter unauthorized = new SseEmitter(1_000L);
+            try {
+                unauthorized.send(SseEmitter.event().name("error").data("请先登录。"));
+            } catch (IOException ignored) {
+            }
+            unauthorized.complete();
+            return unauthorized;
+        }
         String sid = (sessionId == null || sessionId.isBlank())
                 ? UUID.randomUUID().toString().replace("-", "") : sessionId;
-        SseEmitter emitter = new SseEmitter(300_000L);
+        SseEmitter emitter = new SseEmitter(Math.max(1_000L, turnTimeoutMs));
 
         // === Module 06：分布式令牌桶限流，防止 API 滥用 ===
         if (!rateLimiter.tryAcquire(userId)) {
@@ -126,15 +177,46 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
             return emitter;
         }
 
-        CompletableFuture.runAsync(() -> {
+        Runnable work = () -> {
             SseContext.setEmitter(emitter);
             try {
                 completeChat(sid, buildInitialState(sid, userId, userMessage), emitter);
             } catch (Exception e) {
-                log.error("Agent chat failed, session={}", sid, e);
+                log.error("Agent chat failed, session={}, error={}", sid,
+                        SensitiveLogSanitizer.exceptionSummary(e));
                 sendError(emitter, "抱歉，Agent 服务暂时不可用，请稍后再试。");
             } finally {
                 SseContext.clear();
+            }
+        };
+        AtomicReference<Future<?>> taskRef = new AtomicReference<>();
+        try {
+            ExecutorService executor = agentExecutor == null ? FALLBACK_EXECUTOR : agentExecutor;
+            Future<?> task = executor.submit(work);
+            taskRef.set(task);
+        } catch (RejectedExecutionException e) {
+            metric("rejected");
+            sendError(emitter, "当前请求较多，请稍后再试。");
+            return emitter;
+        }
+        emitter.onTimeout(() -> {
+            Future<?> task = taskRef.get();
+            if (task != null) task.cancel(true);
+            metric("timeout");
+            sendError(emitter, "Agent 请求超时，请稍后再试。");
+        });
+        emitter.onCompletion(() -> {
+            Future<?> task = taskRef.get();
+            if (task != null && !task.isDone()) {
+                task.cancel(true);
+                metric("cancelled");
+            }
+        });
+        emitter.onError(error -> {
+            Future<?> task = taskRef.get();
+            if (task != null) {
+                task.cancel(true);
+                metric("cancelled");
             }
         });
         return emitter;
@@ -143,6 +225,9 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
     @Override
     public Result getHistory(String sessionId) {
         Long userId = UserHolder.getUser() == null ? null : UserHolder.getUser().getId();
+        if (userId == null) {
+            throw new UnauthorizedException();
+        }
         AgentSession session = sessionManager.getOrCreate(sessionId, userId);
         return Result.ok(session);
     }
@@ -163,6 +248,7 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
         init.put("userInput", userMessage);
         init.put("messages", session.getMessages());
         init.put("summary", session.getSummary());
+        init.put("version", session.getVersion());
         init.put("iteration", 0);
         init.put("pendingToolCalls", new ArrayList<ToolCall>());
         init.put("toolResults", new ArrayList<ToolResult>());
@@ -188,6 +274,11 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
                 .elapsedTimeMs(System.currentTimeMillis() - start)
                 .build();
         if (emitter != null) {
+            if (finalState != null && finalState.getFinalAnswer() != null
+                    && !finalState.getFinalAnswer().isBlank()) {
+                // Only the verified final answer is observable to the client.
+                emitter.send(SseEmitter.event().name("chunk").data(finalState.getFinalAnswer()));
+            }
             emitter.send(SseEmitter.event().name("done").data(JSONUtil.toJsonStr(response)));
             emitter.complete();
         }
@@ -198,10 +289,13 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
     private Map<String, Object> sanitizeNode(AgentState state) {
         try {
             SanitizedInput cleaned = inputSanitizer.sanitize(state.getUserInput());
-            sendEvent("thinking", "正在理解您的问题：" + cleaned.getCleanedText());
+            // Never echo the complete user prompt to an SSE client before the
+            // final safety gate; prompts may contain phones or other PII.
+            sendEvent("thinking", "正在理解您的问题");
             return Map.of("userInput", cleaned.getCleanedText());
         } catch (SecurityViolationException e) {
-            log.warn("Input rejected by sanitizer: {}", e.getMessage());
+            metric("safety_rejected");
+            log.warn("Input rejected by sanitizer: {}", SensitiveLogSanitizer.exceptionSummary(e));
             sendEvent("error", "您的输入包含不安全内容，已被系统拦截。");
             return Map.of("finalAnswer", "您的输入包含不安全内容，已被系统拦截。", "shouldFinish", true);
         }
@@ -246,6 +340,7 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
         } else {
             updates.put("pendingToolCalls", Collections.emptyList());
             updates.put("currentThought", aiMessage.text());
+            updates.put("finalAnswer", aiMessage.text());
             updates.put("shouldFinish", true);
         }
         return updates;
@@ -298,7 +393,7 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
                     r = toolRegistry.execute(call.getName(), call.getArguments());
                 } catch (Exception e) {
                     success = false;
-                    r = "{\"error\":\"" + e.getMessage() + "\"}";
+                    r = "{\"error\":\"tool execution failed\"}";
                 } finally {
                     UserHolder.removeUser();
                 }
@@ -339,7 +434,8 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
             @Override
             public void onNext(String token) {
                 textRef.updateAndGet(s -> s + token);
-                sendChunk(emitter, token);
+                // Buffer provider chunks. PII masking and policy checks run in
+                // verifyNode before completeChat emits a chunk.
             }
 
             @Override
@@ -354,7 +450,7 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
 
             @Override
             public void onError(Throwable error) {
-                log.error("Streaming chat error", error);
+            log.error("Streaming chat error: {}", SensitiveLogSanitizer.exceptionSummary(error));
                 latch.countDown();
             }
         });
@@ -397,6 +493,7 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
             return Map.of("finalAnswer", result.getCorrectedOutput());
         }
         if (!result.isPassed()) {
+            metric("verification_rejected");
             return Map.of("finalAnswer", "抱歉，我暂时无法给出可靠的回答，请稍后再试。");
         }
         return Map.of();
@@ -481,7 +578,7 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
             try {
                 emitter.send(SseEmitter.event().name("chunk").data(token));
             } catch (IOException e) {
-                log.warn("SSE chunk send failed", e);
+                log.warn("SSE chunk send failed: {}", SensitiveLogSanitizer.exceptionSummary(e));
             }
         }
     }
@@ -506,7 +603,7 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
         try {
             emitter.send(SseEmitter.event().name("confirm").data(JSONUtil.toJsonStr(event)));
         } catch (IOException e) {
-            log.warn("SSE confirm event send failed", e);
+            log.warn("SSE confirm event send failed: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
@@ -523,17 +620,23 @@ public class AgentOrchestratorImpl implements AgentOrchestrator {
         try {
             emitter.send(SseEmitter.event().name(type).data(JSONUtil.toJsonStr(event)));
         } catch (IOException e) {
-            log.warn("SSE event [{}] send failed", type, e);
+            log.warn("SSE event [{}] send failed: {}", type, SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
     private void sendError(SseEmitter emitter, String message) {
         if (emitter != null) {
-            sendEvent("error", message);
             try {
+                emitter.send(SseEmitter.event().name("error").data(message));
                 emitter.complete();
             } catch (Exception ignored) {
             }
+        }
+    }
+
+    private void metric(String outcome) {
+        if (reliabilityMetrics != null) {
+            reliabilityMetrics.increment("campusdeal.agent.turn", outcome);
         }
     }
 }

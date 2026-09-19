@@ -137,6 +137,10 @@ class SensitiveGuardTest {
 
         assertFalse(result.isExecuted());
         assertTrue(result.getMessage().contains("无权"));
+
+        when(toolRegistry.execute(anyString(), anyString())).thenReturn("{\"success\":true}");
+        GuardResult ownerResult = guard.handleConfirmation(decision.getConfirmationId(), true, 1001L);
+        assertTrue(ownerResult.isExecuted());
     }
 
     @Test

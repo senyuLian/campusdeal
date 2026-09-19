@@ -10,7 +10,9 @@ import com.alibaba.otter.canal.protocol.CanalEntry.Header;
 import com.alibaba.otter.canal.protocol.CanalEntry.RowChange;
 import com.alibaba.otter.canal.protocol.CanalEntry.RowData;
 import com.alibaba.otter.canal.protocol.Message;
+import com.campusdeal.config.ReliabilityMetrics;
 import com.campusdeal.utils.RedisConstants;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -69,16 +71,27 @@ class CanalClientTest {
                 .build();
     }
 
+    private Entry buildDeleteEntry(String table, String voucherId) {
+        Column idColumn = Column.newBuilder().setName("voucher_id").setValue(voucherId).setIsKey(true).build();
+        RowData rowData = RowData.newBuilder().addBeforeColumns(idColumn).build();
+        RowChange rowChange = RowChange.newBuilder()
+                .setEventType(EventType.DELETE)
+                .addRowDatas(rowData)
+                .build();
+        Header header = Header.newBuilder().setTableName(table).build();
+        return Entry.newBuilder().setEntryType(EntryType.ROWDATA).setHeader(header)
+                .setStoreValue(rowChange.toByteString()).build();
+    }
+
     @Test
-    @DisplayName("CN-01: tb_voucher 更新，失效商户缓存与秒杀库存缓存")
+    @DisplayName("CN-01: tb_voucher 更新，失效券派生视图")
     void shouldInvalidateCacheOnVoucherChange() {
         List<Entry> entries = List.of(
                 buildRowDataEntry("tb_voucher", "5", EventType.UPDATE));
 
         client.handleEntries(entries);
 
-        verify(stringRedisTemplate).delete(RedisConstants.CACHE_MERCHANT_KEY + "5");
-        verify(stringRedisTemplate).delete(RedisConstants.FLASH_DEAL_STOCK_KEY + "5");
+        verify(stringRedisTemplate).delete("coupon:list:shop:5");
     }
 
     @Test
@@ -140,12 +153,36 @@ class CanalClientTest {
     }
 
     @Test
+    @DisplayName("CN-07: DELETE 使用 before-image，且不删除秒杀库存权威 key")
+    void shouldUseBeforeImageForDeleteWithoutTouchingStock() {
+        client.handleEntries(List.of(buildDeleteEntry("tb_seckill_voucher", "9")));
+
+        verify(stringRedisTemplate).delete("coupon:list:shop:9");
+        verify(stringRedisTemplate, org.mockito.Mockito.never())
+                .delete(RedisConstants.FLASH_DEAL_STOCK_KEY + "9");
+    }
+
+    @Test
     @DisplayName("CN-06: 心跳批（batchId=-1）视为空批；有数据批不视为心跳")
     void shouldTreatHeartbeatAsEmpty() {
         assertThat(client.isHeartbeatOrEmpty(new Message(-1L, Collections.emptyList()))).isTrue();
         assertThat(client.isHeartbeatOrEmpty(new Message(0L, Collections.emptyList()))).isTrue();
         assertThat(client.isHeartbeatOrEmpty(
                 new Message(5L, List.of(buildRowDataEntry("tb_voucher", "5", EventType.UPDATE))))).isFalse();
+    }
+
+    @Test
+    @DisplayName("CN-M1: 事件批次指标使用固定结果标签")
+    void shouldRecordBoundedCanalTelemetry() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ReflectionTestUtils.setField(client, "reliabilityMetrics", new ReliabilityMetrics(registry));
+
+        client.handleEntries(List.of(buildRowDataEntry("tb_voucher", "5", EventType.UPDATE)));
+
+        assertThat(registry.get("campusdeal.canal.events")
+                .tag("outcome", "batch").counter().count()).isEqualTo(1.0);
+        assertThat(client.getStatus().getLastBatchSize()).isEqualTo(1L);
+        assertThat(client.getStatus().getLastEventAt()).isPositive();
     }
 
     // ==================== T7：自动重连 ====================

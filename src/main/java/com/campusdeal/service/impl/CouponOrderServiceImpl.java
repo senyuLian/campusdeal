@@ -9,6 +9,7 @@ import com.campusdeal.service.ICouponOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.campusdeal.utils.RedisIdWorker;
 import com.campusdeal.utils.UserHolder;
+import com.campusdeal.security.AuthorizationService;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
@@ -33,6 +34,8 @@ public class CouponOrderServiceImpl extends ServiceImpl<CouponOrderMapper, Coupo
     @Resource
     @Lazy
     private RedissonClient redissonClient;
+    @Resource
+    private AuthorizationService authorizationService;
 
     /**
      * Flash deal coupon purchase
@@ -41,7 +44,11 @@ public class CouponOrderServiceImpl extends ServiceImpl<CouponOrderMapper, Coupo
      */
     @Override
     public Result seckillVoucher(Long dealId) {
+        authorizationService.requireAuthenticated();
         FlashDeal deal = flashDealService.getById(dealId);
+        if (deal == null || deal.getBeginTime() == null || deal.getEndTime() == null) {
+            return Result.fail("Flash deal unavailable");
+        }
         if (deal.getBeginTime().isAfter(LocalDateTime.now())) {
             return Result.fail("Flash deal has not started");
         }
@@ -70,7 +77,7 @@ public class CouponOrderServiceImpl extends ServiceImpl<CouponOrderMapper, Coupo
     public Result createCouponOrder(Long dealId) {
         Long userId = UserHolder.getUser().getId();
 
-        Long count = query().eq("user_id", userId).count();
+        Long count = query().eq("user_id", userId).eq("voucher_id", dealId).count();
         if (count > 0) {
             return Result.fail("User has already purchased once");
         }

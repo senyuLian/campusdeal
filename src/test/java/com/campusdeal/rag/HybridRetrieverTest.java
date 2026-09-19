@@ -6,6 +6,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import com.campusdeal.config.ReliabilityMetrics;
 
 import java.util.List;
 import java.util.Optional;
@@ -33,6 +36,11 @@ class HybridRetrieverTest {
 
     @InjectMocks
     HybridRetrieverImpl retriever;
+
+    @org.junit.jupiter.api.BeforeEach
+    void enableVectorForUnitFixture() {
+        ReflectionTestUtils.setField(retriever, "vectorEnabled", true);
+    }
 
     @Test
     @DisplayName("HR-01 BM25+向量都有结果：RRF 融合后返回 topK，分数正确")
@@ -130,5 +138,40 @@ class HybridRetrieverTest {
 
         assertThat(results).hasSize(1);
         assertThat(results.get(0).getDocId()).isEqualTo("doc-1");
+    }
+
+    @Test
+    @DisplayName("HR-08 向量降级只记录有界 outcome 标签，不记录原始查询")
+    void hr08_vectorFailureRecordsBoundedMetric() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ReflectionTestUtils.setField(retriever, "reliabilityMetrics", new ReliabilityMetrics(registry));
+        when(bm25Index.search(anyString(), anyInt())).thenReturn(List.of());
+        when(embedder.embed(anyString())).thenThrow(new IllegalStateException("backend down"));
+
+        retriever.retrieve("手机号 13812345678", 3);
+
+        assertThat(registry.get("campusdeal.rag.search").tag("outcome", "vector_degraded").counter().count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("campusdeal.rag.search").counter().getId().getTags())
+                .noneMatch(tag -> "手机号 13812345678".equals(tag.getValue()));
+    }
+
+    @Test
+    @DisplayName("HR-07 同一文档最多返回两个分块且同分时按 canonical id 稳定排序")
+    void hr07_limitsChunksPerDocumentAndBreaksTiesDeterministically() {
+        when(bm25Index.search(anyString(), anyInt())).thenReturn(List.of(
+                new BM25Result("doc#2", "", "c2", 0.9, "faq"),
+                new BM25Result("doc#1", "", "c1", 0.9, "faq"),
+                new BM25Result("doc#3", "", "c3", 0.9, "faq"),
+                new BM25Result("other#0", "", "other", 0.8, "faq")));
+        when(embedder.embed(anyString())).thenReturn(new float[1]);
+        when(vectorStore.search(any(), anyInt())).thenReturn(List.of(
+                VectorResult.builder().docId("doc#1").cosineSimilarity(0.9).build(),
+                VectorResult.builder().docId("doc#2").cosineSimilarity(0.9).build()));
+
+        List<RetrievalResult> results = retriever.retrieve("test", 4);
+
+        assertThat(results).extracting(RetrievalResult::getDocId)
+                .containsExactly("doc#1", "doc#2", "other#0");
     }
 }

@@ -31,7 +31,7 @@ function redisRaw(commands) {
 }
 function redis(cmd) {
     const args = cmd.trim().split(/\s+/);
-    return redisRaw([['AUTH', '123456'], args]).then(parseBulk);
+    return redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], args]).then(parseBulk);
 }
 function parseBulk(data) {
     const re = /\$(\d+)\r\n([\s\S]*?)\r\n/;

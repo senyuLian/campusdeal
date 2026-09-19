@@ -5,6 +5,7 @@ import com.campusdeal.service.IMerchantService;
 import com.campusdeal.utils.RedisConstants;
 import com.campusdeal.utils.RedisIdWorker;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import jakarta.annotation.Resource;
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @SpringBootTest
+@EnabledIfEnvironmentVariable(named = "CAMPUSDEAL_RUN_INTEGRATION", matches = "true")
 class CampusDealApplicationIT {
 
     @Resource

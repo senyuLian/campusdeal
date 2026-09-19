@@ -6,10 +6,10 @@
 
 | 组件 | 状态 | 说明 |
 |---|---|---|
-| JDK | ✅ 17.0.17（`D:/program/develop/jdks/jdk17`） | 系统默认 JDK25 未使用 |
+| JDK | ✅ 17.0.17（通过 `JAVA_HOME` 配置） | 系统默认 JDK25 未使用 |
 | Maven | ✅ 3.9.4 | - |
 | MySQL :3306 | ✅ UP | campusdeal 库可连 |
-| Redis :6379 | ✅ UP | 已启动 `Redis-x64-3.2.100`，`requirepass 123456` |
+| Redis :6379 | ✅ UP | 已启动本地 Redis，密码通过 `CAMPUSDEAL_REDIS_PASSWORD` 注入 |
 | 后端 :8081 | ✅ UP | `Started CampusDealApplication in 5.794s` |
 | nginx :8080 | ❌ DOWN | 前端联调前再启动 |
 | Kafka :9092 | ❌ DOWN | 默认降级（listener.auto-startup=false） |
@@ -20,7 +20,7 @@
 ## 2. 编译
 
 ```bash
-JAVA_HOME="D:/program/develop/jdks/jdk17" mvn compile   # EXIT=0 ✅
+JAVA_HOME="<path-to-jdk17>" mvn compile   # EXIT=0 ✅
 ```
 
 ## 3. 现有单测摸底（mvn test）

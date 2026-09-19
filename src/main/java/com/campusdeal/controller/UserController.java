@@ -13,8 +13,13 @@ import com.campusdeal.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import org.springframework.validation.annotation.Validated;
 
 import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
 
 
 /**
@@ -28,6 +33,7 @@ import jakarta.annotation.Resource;
 @Slf4j
 @RestController
 @RequestMapping("/user")
+@Validated
 public class UserController {
 
     @Autowired
@@ -40,9 +46,9 @@ public class UserController {
      * 发送手机验证码
      */
     @PostMapping("code")
-    public Result sendCode(@RequestParam("phone") String phone) {
-        log.debug("发送验证码：{}", phone);
-        return userService.sendCode(phone);
+    public Result sendCode(@RequestParam("phone") @NotBlank @Pattern(regexp = "1[3-9]\\d{9}") String phone,
+                           HttpServletRequest request) {
+        return userService.sendCode(phone, request.getRemoteAddr());
     }
 
     /**
@@ -50,9 +56,8 @@ public class UserController {
      * @param loginForm 登录参数，包含手机号、验证码；或者手机号、密码
      */
     @PostMapping("/login")
-    public Result login(@RequestBody LoginFormDTO loginForm){
-        log.debug("登录：{}", loginForm);
-        return userService.login(loginForm);
+    public Result login(@Valid @RequestBody LoginFormDTO loginForm, HttpServletRequest request){
+        return userService.login(loginForm, request.getRemoteAddr());
     }
 
     /**

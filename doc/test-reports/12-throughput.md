@@ -1,7 +1,7 @@
 # 测试报告 12 · 异步落库（Kafka）与消费者吞吐优化
 
 > 日期：2026-08-23 ｜ 依据：`doc/test-plan/12-throughput-benchmark.md`（TP-03 秒杀吞吐）、`doc/test-plan/06-module-consistency.md`
-> 环境：JDK 17（`D:/program/develop/jdks/jdk17`）✅、MySQL :3306 ✅、Redis :6379（123456）✅、后端 :8081 ✅、Kafka KRaft 单节点 :9092 ✅
+> 环境：JDK 17（通过 `JAVA_HOME` 配置）✅、MySQL :3306 ✅、Redis :6379（密码由环境变量注入）✅、后端 :8081 ✅、Kafka KRaft 单节点 :9092 ✅
 
 ## 1. 背景与目标
 

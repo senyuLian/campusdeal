@@ -62,7 +62,8 @@ class ToolRegistryTest {
 
         String result = registry.execute("a", "{}");
 
-        assertTrue(result.contains("boom"));
+        assertTrue(result.contains("tool execution failed"));
+        assertFalse(result.contains("boom"));
     }
 
     @Test

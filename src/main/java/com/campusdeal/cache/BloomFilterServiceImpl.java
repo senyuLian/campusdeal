@@ -2,6 +2,8 @@ package com.campusdeal.cache;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.campusdeal.entity.FlashDeal;
+import com.campusdeal.config.ReliabilityMetrics;
+import com.campusdeal.security.SensitiveLogSanitizer;
 import com.campusdeal.mapper.FlashDealMapper;
 import com.google.common.hash.BloomFilter;
 import com.google.common.hash.Funnels;
@@ -9,6 +11,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import jakarta.annotation.Resource;
 
@@ -36,6 +40,13 @@ public class BloomFilterServiceImpl implements BloomFilterService, InitializingB
 
     @Resource
     private FlashDealMapper flashDealMapper;
+
+    @Autowired(required = false)
+    private StringRedisTemplate stringRedisTemplate;
+    @Autowired(required = false)
+    private ReliabilityMetrics reliabilityMetrics;
+
+    private static final String COMMITTED_DEALS_KEY = "bloom:committed:deals";
 
     /**
      * 布隆过滤器配置（@ConfigurationProperties 绑定；无 Spring 环境下使用默认值，便于单元测试）
@@ -71,17 +82,23 @@ public class BloomFilterServiceImpl implements BloomFilterService, InitializingB
             // 启动时数据库不可用不应阻塞整个应用：记录告警，等待定时重建恢复。
             // 期间布隆过滤器为空，秒杀请求会被拒在入口（安全失败）。
             log.warn("Bloom filter initial rebuild failed (will retry on schedule): {}",
-                    e.getMessage());
+                    SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
     // === 定时重建：周期性刷新（@EnableScheduling 已开启） ===
     @Scheduled(fixedRateString = "${campusdeal.bloom.rebuild-interval-seconds:300}000")
     public void rebuild() {
-        List<FlashDeal> activeDeals = flashDealMapper.selectList(
-                Wrappers.<FlashDeal>lambdaQuery()
-                        .gt(FlashDeal::getEndTime, LocalDateTime.now())
-        );
+        List<FlashDeal> activeDeals;
+        try {
+            activeDeals = flashDealMapper.selectList(
+                    Wrappers.<FlashDeal>lambdaQuery()
+                            .gt(FlashDeal::getEndTime, LocalDateTime.now())
+            );
+        } catch (RuntimeException e) {
+            metric("rebuild_failure");
+            throw e;
+        }
 
         // 取配置预期值与实际活动数的较大者：配置值决定容量基线（T5 修复后生效），
         // 活动数超过配置值时不至于因容量不足而误判率飙升；Guava 要求 > 0
@@ -91,6 +108,14 @@ public class BloomFilterServiceImpl implements BloomFilterService, InitializingB
         activeDeals.forEach(d -> newFilter.put(d.getVoucherId()));
 
         this.bloomFilter = newFilter;
+        if (stringRedisTemplate != null) {
+            stringRedisTemplate.delete(COMMITTED_DEALS_KEY);
+            activeDeals.stream().map(FlashDeal::getVoucherId)
+                    .filter(java.util.Objects::nonNull)
+                    .map(String::valueOf)
+                    .forEach(id -> stringRedisTemplate.opsForSet().add(COMMITTED_DEALS_KEY, id));
+        }
+        metric("rebuild");
 
         LocalDateTime now = LocalDateTime.now();
         this.stats = BloomFilterStats.builder()
@@ -111,11 +136,38 @@ public class BloomFilterServiceImpl implements BloomFilterService, InitializingB
         if (dealId == null) {
             return false;
         }
-        return bloomFilter.mightContain(dealId);
+        if (bloomFilter.mightContain(dealId)) return true;
+        // A small shared exact set closes the multi-instance admission gap
+        // between a committed write and the next periodic Bloom rebuild.
+        if (stringRedisTemplate != null
+                && Boolean.TRUE.equals(stringRedisTemplate.opsForSet()
+                .isMember(COMMITTED_DEALS_KEY, dealId.toString()))) {
+            bloomFilter.put(dealId);
+            metric("shared_hit");
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public synchronized void registerCommitted(Long dealId) {
+        if (dealId != null) {
+            bloomFilter.put(dealId);
+            if (stringRedisTemplate != null) {
+                stringRedisTemplate.opsForSet().add(COMMITTED_DEALS_KEY, dealId.toString());
+            }
+            metric("register");
+        }
     }
 
     @Override
     public BloomFilterStats getStats() {
         return stats;
+    }
+
+    private void metric(String outcome) {
+        if (reliabilityMetrics != null) {
+            reliabilityMetrics.increment("campusdeal.bloom", outcome);
+        }
     }
 }

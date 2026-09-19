@@ -2,9 +2,13 @@ package com.campusdeal.controller;
 
 
 import com.campusdeal.dto.Result;
+import com.campusdeal.dto.CouponWriteRequest;
 import com.campusdeal.entity.Coupon;
 import com.campusdeal.service.ICouponService;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import org.springframework.validation.annotation.Validated;
 
 import jakarta.annotation.Resource;
 
@@ -19,6 +23,7 @@ import jakarta.annotation.Resource;
  */
 @RestController
 @RequestMapping("/coupon")
+@Validated
 public class CouponController {
 
     @Resource
@@ -30,7 +35,8 @@ public class CouponController {
      * @return 优惠券id
      */
     @PostMapping
-    public Result addVoucher(@RequestBody Coupon coupon) {
+    public Result addVoucher(@Valid @RequestBody CouponWriteRequest request) {
+        Coupon coupon = toEntity(request);
         couponService.save(coupon);
         return Result.ok(coupon.getId());
     }
@@ -41,7 +47,8 @@ public class CouponController {
      * @return 优惠券id
      */
     @PostMapping("seckill")
-    public Result addFlashDeal(@RequestBody Coupon coupon) {
+    public Result addFlashDeal(@Valid @RequestBody CouponWriteRequest request) {
+        Coupon coupon = toEntity(request);
         couponService.addFlashDeal(coupon);
         return Result.ok(coupon.getId());
     }
@@ -72,5 +79,12 @@ public class CouponController {
     @GetMapping("/list/all")
     public Result queryAllCoupons() {
         return couponService.queryAllCoupons();
+    }
+
+    private Coupon toEntity(CouponWriteRequest request) {
+        return new Coupon().setShopId(request.getShopId()).setTitle(request.getTitle())
+                .setSubTitle(request.getSubTitle()).setRules(request.getRules()).setPayValue(request.getPayValue())
+                .setActualValue(request.getActualValue()).setType(request.getType()).setStatus(1)
+                .setStock(request.getStock()).setBeginTime(request.getBeginTime()).setEndTime(request.getEndTime());
     }
 }

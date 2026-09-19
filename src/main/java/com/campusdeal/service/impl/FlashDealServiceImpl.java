@@ -18,9 +18,16 @@ import com.campusdeal.service.OutboxService;
 import com.campusdeal.utils.RedisConstants;
 import com.campusdeal.utils.RedisIdWorker;
 import com.campusdeal.utils.UserHolder;
+import com.campusdeal.security.AuthorizationService;
+import com.campusdeal.security.SensitiveLogSanitizer;
+import com.campusdeal.service.FlashOrderIntentService;
+import com.campusdeal.entity.FlashOrderIntent;
+import com.campusdeal.mapper.FlashOrderIntentMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
@@ -50,12 +57,25 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
     private RedisIdWorker redisIdWorker;
     @Resource
     private DefaultRedisScript<Long> flashDealScript;
-    @Resource
+    @Autowired(required = false)
     private FlashDealProducer flashDealProducer;
     @Resource
     private OutboxService outboxService;
     @Resource
     private CouponOrderMapper couponOrderMapper;
+    @Resource
+    private AuthorizationService authorizationService;
+    @Resource
+    private FlashOrderIntentService flashOrderIntentService;
+    @Resource
+    private FlashOrderIntentMapper flashOrderIntentMapper;
+
+    @Value("${campusdeal.flashdeal.durable-acceptance-enabled:true}")
+    private boolean durableAcceptanceEnabled = true;
+    @Value("${campusdeal.flashdeal.durable-acceptance-cutover-enabled:true}")
+    private boolean durableAcceptanceCutoverEnabled = true;
+    @Value("${campusdeal.flashdeal.durable-acceptance-shadow-enabled:false}")
+    private boolean durableAcceptanceShadowEnabled = false;
 
     /**
      * P1-7：启动时预热所有未过期秒杀活动的剩余库存到 Redis，
@@ -67,15 +87,35 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
             preloadAllActiveStock();
         } catch (Exception e) {
             // 启动时 DB/Redis 异常不应阻塞应用：记录告警，等待运维手动预热
-            log.warn("Flash deal stock preload failed at startup: {}", e.getMessage());
+            log.warn("Flash deal stock preload failed at startup: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
     @Override
     public Result executeFlashDeal(Long dealId) {
+        var user = authorizationService == null
+                ? UserHolder.getUser()
+                : authorizationService.requireAuthenticated();
+        if (user == null || user.getId() == null) {
+            return Result.fail("请先登录");
+        }
+        // Durable acceptance is the application default. Tests and a staged
+        // rollback can leave this collaborator unwired and use the legacy Lua
+        // admission path below.
+        if (durableAcceptanceShadowEnabled && flashOrderIntentService != null) {
+            FlashOrderIntentService.ShadowComparison comparison =
+                    flashOrderIntentService.compareLegacyAdmission(dealId, user.getId());
+            if (comparison.discrepant()) {
+                log.warn("Flash acceptance shadow discrepancy: dealId={}, userId={}, legacy={}, durable={}",
+                        dealId, user.getId(), comparison.legacyDecision(), comparison.durableDecision());
+            }
+        }
+        if (durableAcceptanceEnabled && durableAcceptanceCutoverEnabled && flashOrderIntentService != null) {
+            return flashOrderIntentService.accept(dealId, user.getId());
+        }
         FlashDealContext ctx = FlashDealContext.builder()
                 .dealId(dealId)
-                .userId(UserHolder.getUser().getId())
+                .userId(user.getId())
                 .startNanos(System.nanoTime())
                 .build();
 
@@ -103,22 +143,49 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
         // 布隆过滤器只按 endTime>now 构建且 300s 才重建：未开始的券、刚结束的券在下次重建前
         // 都会误放行，必须在此用 Redis 时间窗拦截（单个 GET，~0.1ms，不穿透 DB）。
         String timeRange = stringRedisTemplate.opsForValue().get(RedisConstants.FLASH_DEAL_TIME_KEY + dealId);
-        if (timeRange != null) {
-            String[] parts = timeRange.split("\\|");
-            if (parts.length == 2) {
-                try {
-                    long now = System.currentTimeMillis();
-                    long begin = Long.parseLong(parts[0]);
-                    long end = Long.parseLong(parts[1]);
-                    if (now < begin) {
-                        return Result.fail("秒杀尚未开始");
-                    }
-                    if (now > end) {
-                        return Result.fail("秒杀已经结束");
-                    }
-                } catch (NumberFormatException ignore) {
-                    // 时间窗格式异常时放行，由后续层兜底
+        if (timeRange == null) {
+            // Production beans always have a MyBatis base mapper.  Keep the
+            // Redis-only legacy path usable in isolated unit tests/staged
+            // rollbacks where the service is constructed without one.
+            if (getBaseMapper() != null) {
+                FlashDeal deal = getById(dealId);
+                if (deal == null || deal.getBeginTime() == null || deal.getEndTime() == null) {
+                    return Result.fail("活动信息不可用");
                 }
+                long now = System.currentTimeMillis();
+                long begin = deal.getBeginTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+                long end = deal.getEndTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+                if (now < begin) return Result.fail("秒杀尚未开始");
+                if (now > end) return Result.fail("秒杀已经结束");
+                stringRedisTemplate.opsForValue().set(RedisConstants.FLASH_DEAL_TIME_KEY + dealId, begin + "|" + end);
+            }
+        } else {
+            String[] parts = timeRange.split("\\|");
+            if (parts.length != 2) {
+                return Result.fail("活动信息不可用");
+            }
+            try {
+                long now = System.currentTimeMillis();
+                long begin = Long.parseLong(parts[0]);
+                long end = Long.parseLong(parts[1]);
+                if (begin >= end) return Result.fail("活动信息不可用");
+                if (now < begin) return Result.fail("秒杀尚未开始");
+                if (now > end) return Result.fail("秒杀已经结束");
+            } catch (NumberFormatException malformed) {
+                return Result.fail("活动信息不可用");
+            }
+        }
+
+        String stockKey = RedisConstants.FLASH_DEAL_STOCK_KEY + dealId;
+        Boolean stockPresent = stringRedisTemplate.hasKey(stockKey);
+        if (Boolean.FALSE.equals(stockPresent) && getBaseMapper() != null) {
+            FlashDeal deal = getById(dealId);
+            if (deal == null || deal.getStock() == null) return Result.fail("活动信息不可用");
+            int remaining = remainingStockFromDb(dealId, deal);
+            stringRedisTemplate.opsForValue().set(stockKey, String.valueOf(remaining));
+            if (remaining <= 0) {
+                stockCache.put(dealId, false);
+                return Result.fail("Out of stock");
             }
         }
 
@@ -149,11 +216,29 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
             return handleSuccess(ctx);
         }
         if (code == -1) {
-            stockCache.put(ctx.getDealId(), false);  // L1 负缓存：后续请求快速失败
-            // T16：置 "0" 而非删除——库存 key 显式保持为 0，与 Lua tonumber(stock)<=0 判定一致，
-            // 且并发测试/监控可直接断言 flashdeal:stock:{dealId}=0（"已扣到 0"而非"缺失"）。
-            stringRedisTemplate.opsForValue().set(RedisConstants.FLASH_DEAL_STOCK_KEY + ctx.getDealId(), "0");
-            return Result.fail("Out of stock");
+            String stockKey = RedisConstants.FLASH_DEAL_STOCK_KEY + ctx.getDealId();
+            String stockValue = null;
+            try {
+                stockValue = stringRedisTemplate.opsForValue().get(stockKey);
+            } catch (Exception ignored) {
+                // A Redis outage is an unavailable admission decision, not
+                // evidence that the configured deal is sold out.
+            }
+            if (stockValue == null || stockValue.isBlank()) {
+                return Result.fail("库存状态暂不可用");
+            }
+            try {
+                if (Long.parseLong(stockValue) <= 0) {
+                    stockCache.put(ctx.getDealId(), false);  // bounded negative cache
+                    // Keep an explicit zero only for a confirmed stock key;
+                    // a missing key must never become a permanent sold-out marker.
+                    stringRedisTemplate.opsForValue().set(stockKey, "0");
+                    return Result.fail("Out of stock");
+                }
+            } catch (NumberFormatException ignored) {
+                return Result.fail("库存状态暂不可用");
+            }
+            return Result.fail("库存状态暂不可用");
         }
         if (code == -2) {
             return Result.fail("Already purchased");
@@ -170,7 +255,7 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
         // 异步落库改造：秒杀主流程只「受理订单」——同步确认投递 Kafka，
         // 真正的 MySQL 落库由 FlashDealConsumer 异步执行（SETNX 幂等 + UNIQUE KEY 兜底）。
         // 投递失败则写 Outbox PENDING，交由 OutboxScheduler 最终落库，保证订单不丢。
-        if (!flashDealProducer.send(message)) {
+        if (flashDealProducer == null || !flashDealProducer.send(message)) {
             outboxService.record("sync-" + ctx.getOrderId(),
                     JSONUtil.toJsonStr(message), OutboxStatus.PENDING);
         }
@@ -217,11 +302,7 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
             if (dealId == null || deal.getStock() == null) {
                 continue;
             }
-            Long sold = couponOrderMapper.selectCount(
-                    Wrappers.<CouponOrder>lambdaQuery()
-                            .eq(CouponOrder::getVoucherId, dealId)
-            );
-            int remaining = Math.max(deal.getStock() - sold.intValue(), 0);
+            int remaining = remainingStockFromDb(dealId, deal);
             stringRedisTemplate.opsForValue().setIfAbsent(
                     RedisConstants.FLASH_DEAL_STOCK_KEY + dealId,
                     String.valueOf(remaining)
@@ -236,5 +317,30 @@ public class FlashDealServiceImpl extends ServiceImpl<FlashDealMapper, FlashDeal
             }
         }
         log.info("Flash deal stock preloaded: {} active deals", activeDeals.size());
+    }
+
+    private Long countInFlightIntents(Long dealId) {
+        if (flashOrderIntentMapper == null) return 0L;
+        return flashOrderIntentMapper.selectCount(Wrappers.<FlashOrderIntent>lambdaQuery()
+                .eq(FlashOrderIntent::getVoucherId, dealId)
+                .in(FlashOrderIntent::getStatus, "ACCEPTED", "PROCESSING"));
+    }
+
+    /**
+     * In durable mode tb_seckill_voucher.stock is decremented inside the
+     * acceptance transaction and is already the remaining authoritative stock.
+     * The legacy path keeps the original stock value, so only that path needs
+     * to subtract durable orders/intents during Redis reconstruction.
+     */
+    private int remainingStockFromDb(Long dealId, FlashDeal deal) {
+        if (durableAcceptanceEnabled && flashOrderIntentMapper != null) {
+            return Math.max(deal.getStock() == null ? 0 : deal.getStock(), 0);
+        }
+        Long sold = couponOrderMapper.selectCount(Wrappers.<CouponOrder>lambdaQuery()
+                .eq(CouponOrder::getVoucherId, dealId));
+        Long accepted = countInFlightIntents(dealId);
+        return Math.max((deal.getStock() == null ? 0 : deal.getStock())
+                - (sold == null ? 0 : sold.intValue())
+                - (accepted == null ? 0 : accepted.intValue()), 0);
     }
 }

@@ -38,10 +38,10 @@ function parseBulk(data) {
 }
 async function redis(cmd) {
     const args = cmd.trim().split(/\s+/);
-    return parseBulk(await redisRaw([['AUTH', '123456'], args]));
+    return parseBulk(await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], args]));
 }
 async function redisSet(k, v) {
-    return redisRaw([['AUTH', '123456'], ['SET', k, v]]);
+    return redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], ['SET', k, v]]);
 }
 
 async function req(method, path, { token, body, query } = {}) {

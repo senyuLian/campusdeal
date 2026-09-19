@@ -4,6 +4,7 @@ import com.campusdeal.dto.Result;
 import com.campusdeal.security.ConfirmRequest;
 import com.campusdeal.security.GuardResult;
 import com.campusdeal.security.SensitiveGuard;
+import com.campusdeal.security.AuthorizationService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,6 +29,8 @@ class AgentControllerTest {
     AgentOrchestrator orchestrator;
     @Mock
     SensitiveGuard sensitiveGuard;
+    @Mock
+    AuthorizationService authorizationService;
 
     @InjectMocks
     AgentController controller;
@@ -64,6 +67,7 @@ class AgentControllerTest {
         u.setId(1001L);
         com.campusdeal.utils.UserHolder.saveUser(u);
         try {
+            when(authorizationService.requireAuthenticated()).thenReturn(u);
             when(sensitiveGuard.handleConfirmation("cfm-1", true, 1001L))
                     .thenReturn(GuardResult.builder().executed(true).result("{\"status\":\"refunded\"}").message("操作成功").build());
 

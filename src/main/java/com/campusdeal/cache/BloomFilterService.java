@@ -16,6 +16,11 @@ public interface BloomFilterService {
      */
     boolean mightContain(Long dealId);
 
+    /** Register a newly committed deal without waiting for the periodic rebuild. */
+    default void registerCommitted(Long dealId) {
+        // Implementations that maintain an in-memory admission index override this.
+    }
+
     /**
      * 获取当前布隆过滤器的统计信息（用于监控和面试展示）
      */

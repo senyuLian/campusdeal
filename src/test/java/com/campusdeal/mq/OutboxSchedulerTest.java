@@ -51,9 +51,9 @@ class OutboxSchedulerTest {
 
         scheduler.compensate();
 
-        verify(outboxService).updateStatus(1L, OutboxStatus.PROCESSED, 0);
-        verify(outboxService).updateStatus(2L, OutboxStatus.PROCESSED, 0);
-        verify(outboxService).updateStatus(3L, OutboxStatus.PROCESSED, 0);
+        verify(outboxService).updateStatus(1L, OutboxStatus.PROCESSED, 0, null);
+        verify(outboxService).updateStatus(2L, OutboxStatus.PROCESSED, 0, null);
+        verify(outboxService).updateStatus(3L, OutboxStatus.PROCESSED, 0, null);
     }
 
     @Test
@@ -67,7 +67,7 @@ class OutboxSchedulerTest {
         scheduler.compensate();
 
         // retry_count 5 → 6 >= MAX_RETRY(5) → FAILED
-        verify(outboxService).updateStatus(1L, OutboxStatus.FAILED, 6);
+        verify(outboxService).updateStatus(1L, OutboxStatus.FAILED, 6, "db down");
     }
 
     @Test
@@ -79,7 +79,7 @@ class OutboxSchedulerTest {
 
         scheduler.compensate();
 
-        verify(outboxService).updateStatus(1L, OutboxStatus.PROCESSED, 0);
+        verify(outboxService).updateStatus(1L, OutboxStatus.PROCESSED, 0, null);
     }
 
     @Test

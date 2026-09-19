@@ -16,7 +16,7 @@ const { execFileSync } = require('child_process');
 
 const BASE = 'http://localhost:8081';
 const PHONE = '13800001111';
-const MYSQL = ['mysql', '-h127.0.0.1', '-uroot', '-p123456', 'campusdeal', '-N', '-e'];
+  const MYSQL = ['mysql', '-h127.0.0.1', '-uroot', '-p' + (process.env.CAMPUSDEAL_DB_PASSWORD || ''), 'campusdeal', '-N', '-e'];
 let pass = 0, fail = 0;
 const report = (name, ok, detail = '') => { ok ? pass++ : fail++; console.log((ok ? '  ✅ ' : '  ❌ ') + name + (detail ? '  —  ' + detail : '')); };
 
@@ -58,7 +58,7 @@ function parseBulk(data) {
 }
 async function redis(cmd) {
     const args = cmd.trim().split(/\s+/);
-    return parseBulk(await redisRaw([['AUTH', '123456'], args]));
+    return parseBulk(await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], args]));
 }
 async function req(method, path, { token, body, query } = {}) {
     let url = BASE + path;

@@ -19,9 +19,17 @@ import jakarta.servlet.http.HttpSession;
  */
 public interface IUserService extends IService<User> {
 
-    Result sendCode(String phone);
+    default Result sendCode(String phone) {
+        return sendCode(phone, "unknown");
+    }
 
-    Result login(LoginFormDTO loginForm);
+    Result sendCode(String phone, String origin);
+
+    default Result login(LoginFormDTO loginForm) {
+        return login(loginForm, "unknown");
+    }
+
+    Result login(LoginFormDTO loginForm, String origin);
 
     Result sign();
 

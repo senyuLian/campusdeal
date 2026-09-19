@@ -18,7 +18,7 @@ const path = require('path');
 const net = require('net');
 
 const BASE = 'http://localhost:8081';
-const REDIS_AUTH = '123456';
+const REDIS_AUTH = process.env.CAMPUSDEAL_REDIS_PASSWORD || '';
 
 // ---------- 参数解析 ----------
 function parseArgs(argv) {

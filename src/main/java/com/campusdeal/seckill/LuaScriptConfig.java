@@ -18,4 +18,26 @@ public class LuaScriptConfig {
         script.setResultType(Long.class);
         return script;
     }
+
+    @Bean
+    public DefaultRedisScript<Long> flashReservationScript() {
+        return script("flash_reserve.lua");
+    }
+
+    @Bean
+    public DefaultRedisScript<Long> flashReservationReleaseScript() {
+        return script("flash_reserve_release.lua");
+    }
+
+    @Bean
+    public DefaultRedisScript<Long> flashReservationCommitScript() {
+        return script("flash_reserve_commit.lua");
+    }
+
+    private DefaultRedisScript<Long> script(String location) {
+        DefaultRedisScript<Long> script = new DefaultRedisScript<>();
+        script.setLocation(new ClassPathResource(location));
+        script.setResultType(Long.class);
+        return script;
+    }
 }

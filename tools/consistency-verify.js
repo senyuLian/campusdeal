@@ -17,7 +17,7 @@ const HOUR = 3600 * 1000;
 let pass = 0, fail = 0;
 const report = (name, ok, detail = '') => { ok ? pass++ : fail++; console.log((ok ? '  ✅ ' : '  ❌ ') + name + (detail ? '  —  ' + detail : '')); };
 
-const MYSQL = ['mysql', '-h127.0.0.1', '-uroot', '-p123456', 'campusdeal', '-N', '-e'];
+const MYSQL = ['mysql', '-h127.0.0.1', '-uroot', '-p' + (process.env.CAMPUSDEAL_DB_PASSWORD || ''), 'campusdeal', '-N', '-e'];
 
 function redisRaw(commands) {
     return new Promise((resolve, reject) => {
@@ -46,9 +46,9 @@ function parseBulk(data) {
 }
 async function redis(cmd) {
     const args = cmd.trim().split(/\s+/);
-    return parseBulk(await redisRaw([['AUTH', '123456'], args]));
+    return parseBulk(await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], args]));
 }
-async function redisSet(k, v) { return redisRaw([['AUTH', '123456'], ['SET', k, v]]); }
+async function redisSet(k, v) { return redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], ['SET', k, v]]); }
 
 function mysql(sql) {
     try {

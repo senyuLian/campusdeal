@@ -1,5 +1,6 @@
 package com.campusdeal.rag;
 
+import com.campusdeal.security.SensitiveLogSanitizer;
 import lombok.extern.slf4j.Slf4j;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Driver;
@@ -39,6 +40,7 @@ public class Neo4jClientImpl implements KnowledgeGraph {
     private final String uri;
     private final String user;
     private final String password;
+    private final boolean enabled;
 
     /** 测试注入点：@InjectMocks 无法构造 @Value 构造器，测试用测试构造器注入 mock Driver */
     private volatile Driver driver;
@@ -46,11 +48,13 @@ public class Neo4jClientImpl implements KnowledgeGraph {
     @Autowired
     public Neo4jClientImpl(
             @Value("${campusdeal.neo4j.uri:bolt://localhost:7687}") String uri,
-            @Value("${campusdeal.neo4j.user:neo4j}") String user,
-            @Value("${campusdeal.neo4j.password:neo4j}") String password) {
+            @Value("${campusdeal.neo4j.user:}") String user,
+            @Value("${campusdeal.neo4j.password:}") String password,
+            @Value("${campusdeal.neo4j.enabled:false}") boolean enabled) {
         this.uri = uri;
         this.user = user;
         this.password = password;
+        this.enabled = enabled;
     }
 
     /** 测试构造器：跳过 @Value，直接注入 mock Driver */
@@ -58,6 +62,7 @@ public class Neo4jClientImpl implements KnowledgeGraph {
         this.uri = "bolt://localhost:7687";
         this.user = "neo4j";
         this.password = "neo4j";
+        this.enabled = true;
         this.driver = driver;
     }
 
@@ -101,7 +106,7 @@ public class Neo4jClientImpl implements KnowledgeGraph {
             Result result = session.run(cypher, params);
             return toGraphResult(result, cypher);
         } catch (Exception e) {
-            log.warn("Neo4j 图谱查询失败（实例未就绪？）: {}", e.getMessage());
+            log.warn("Neo4j 图谱查询失败（实例未就绪？）: {}", SensitiveLogSanitizer.exceptionSummary(e));
             return emptyResult(cypher);
         }
     }
@@ -120,7 +125,7 @@ public class Neo4jClientImpl implements KnowledgeGraph {
         try (Session session = d.session()) {
             session.run(cypher, params);
         } catch (Exception e) {
-            log.warn("Neo4j upsertNode 失败: {}", e.getMessage());
+            log.warn("Neo4j upsertNode 失败: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
@@ -135,7 +140,7 @@ public class Neo4jClientImpl implements KnowledgeGraph {
         try (Session session = d.session()) {
             session.run(cypher, Map.of("fromId", fromId, "toId", toId));
         } catch (Exception e) {
-            log.warn("Neo4j createRelationship 失败: {}", e.getMessage());
+            log.warn("Neo4j createRelationship 失败: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
@@ -160,7 +165,7 @@ public class Neo4jClientImpl implements KnowledgeGraph {
             GraphResult g = toGraphResult(result, cypher);
             return g.getNodes().isEmpty() ? List.of() : List.of(g);
         } catch (Exception e) {
-            log.warn("Neo4j semanticSearch 失败: {}", e.getMessage());
+            log.warn("Neo4j semanticSearch 失败: {}", SensitiveLogSanitizer.exceptionSummary(e));
             return List.of();
         }
     }
@@ -200,6 +205,10 @@ public class Neo4jClientImpl implements KnowledgeGraph {
     }
 
     private Driver resolveDriver() {
+        if (!enabled || uri == null || uri.isBlank() || user == null || user.isBlank()
+                || password == null || password.isBlank()) {
+            return null;
+        }
         Driver d = driver;
         if (d == null) {
             synchronized (this) {
@@ -207,7 +216,7 @@ public class Neo4jClientImpl implements KnowledgeGraph {
                     try {
                         driver = GraphDatabase.driver(uri, AuthTokens.basic(user, password));
                     } catch (Exception e) {
-                        log.warn("Neo4j 驱动创建失败: {}", e.getMessage());
+                        log.warn("Neo4j 驱动创建失败: {}", SensitiveLogSanitizer.exceptionSummary(e));
                         return null;
                     }
                 }

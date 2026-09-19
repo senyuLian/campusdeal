@@ -4,6 +4,7 @@ import com.campusdeal.dto.Result;
 import com.campusdeal.security.ConfirmRequest;
 import com.campusdeal.security.GuardResult;
 import com.campusdeal.security.SensitiveGuard;
+import com.campusdeal.security.AuthorizationService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -15,6 +16,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import jakarta.annotation.Resource;
+import jakarta.validation.constraints.Size;
+import jakarta.validation.Valid;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * Agent 接口（需登录：LoginInterceptor 保护，token 经 RefreshTokenInterceptor 写入 UserHolder）。
@@ -24,16 +28,20 @@ import jakarta.annotation.Resource;
  */
 @RestController
 @RequestMapping("/agent")
+@Validated
 public class AgentController {
 
     @Resource
     private AgentOrchestrator orchestrator;
     @Resource
     private SensitiveGuard sensitiveGuard;
+    @Resource
+    private AuthorizationService authorizationService;
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter chat(@RequestParam("message") String message,
-                           @RequestParam(value = "sessionId", required = false) String sessionId) {
+    public SseEmitter chat(@RequestParam("message") @Size(min = 1, max = 4000) String message,
+                           @RequestParam(value = "sessionId", required = false)
+                           @Size(max = 128) String sessionId) {
         return orchestrator.chat(message, sessionId);
     }
 
@@ -47,7 +55,8 @@ public class AgentController {
      * 批准时由 SensitiveGuard 代为执行原工具并返回结果。
      */
     @PostMapping("/confirm")
-    public Result confirm(@RequestBody ConfirmRequest request) {
+    public Result confirm(@Valid @RequestBody ConfirmRequest request) {
+        authorizationService.requireAuthenticated();
         // T8：越权校验 —— 传入当前登录用户，SensitiveGuard 校验其与确认创建者一致
         Long userId = com.campusdeal.utils.UserHolder.getUser() == null
                 ? null : com.campusdeal.utils.UserHolder.getUser().getId();

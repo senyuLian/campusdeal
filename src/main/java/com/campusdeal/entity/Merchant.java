@@ -43,6 +43,9 @@ public class Merchant implements Serializable {
      */
     private Long typeId;
 
+    /** Merchant owner. Null means legacy data requires an audited assignment. */
+    private Long ownerUserId;
+
     /**
      * 商铺图片，多个图片以','隔开
      */

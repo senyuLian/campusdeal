@@ -7,6 +7,8 @@ import com.campusdeal.security.RateLimiter;
 import com.campusdeal.security.SanitizedInput;
 import com.campusdeal.security.SensitiveGuard;
 import com.campusdeal.security.VerificationResult;
+import com.campusdeal.dto.UserDTO;
+import com.campusdeal.utils.UserHolder;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.StreamingResponseHandler;
@@ -35,6 +37,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -65,6 +68,10 @@ class AgentOrchestratorTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        UserDTO user = new UserDTO();
+        user.setId(1L);
+        user.setRole("USER");
+        UserHolder.saveUser(user);
         orchestrator.buildGraph();
         when(inputSanitizer.sanitize(anyString())).thenAnswer(inv -> SanitizedInput.builder()
                 .cleanedText(inv.getArgument(0))
@@ -85,12 +92,17 @@ class AgentOrchestratorTest {
                 AgentSession.builder().sessionId("s1").userId(1L).messages(new ArrayList<>()).build());
     }
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        UserHolder.removeUser();
+    }
+
     private Map<String, Object> initialState() {
         return orchestrator.buildInitialState("s1", 1L, "你好");
     }
 
     private void stubStream(String answer) {
-        doAnswer(inv -> {
+        lenient().doAnswer(inv -> {
             StreamingResponseHandler<AiMessage> handler = inv.getArgument(1);
             handler.onComplete(Response.from(AiMessage.from(answer), new TokenUsage(10, 20)));
             return null;
@@ -110,6 +122,7 @@ class AgentOrchestratorTest {
         assertEquals(1, result.getIteration());
         assertTrue(result.getPendingToolCalls().isEmpty());
         verify(llmClient).chatSync(anyList(), anyList());
+        verify(llmClient, never()).chatStream(anyList(), any());
     }
 
     @Test

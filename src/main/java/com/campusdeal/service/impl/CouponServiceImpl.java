@@ -10,6 +10,8 @@ import com.campusdeal.entity.FlashDeal;
 import com.campusdeal.service.IFlashDealService;
 import com.campusdeal.service.ICouponOrderService;
 import com.campusdeal.service.ICouponService;
+import com.campusdeal.security.AuthorizationService;
+import com.campusdeal.cache.BloomFilterService;
 import com.campusdeal.utils.RedisIdWorker;
 import com.campusdeal.utils.SimpleRedisLock;
 import com.campusdeal.utils.UserHolder;
@@ -17,6 +19,8 @@ import org.springframework.aop.framework.AopContext;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import jakarta.annotation.Resource;
 
@@ -42,6 +46,23 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
     private IFlashDealService seckillVoucherService;
     @Resource
     private  StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private AuthorizationService authorizationService;
+
+    @Resource
+    private BloomFilterService bloomFilterService;
+
+    @Override
+    @Transactional
+    public boolean save(Coupon coupon) {
+        if (coupon == null) {
+            return false;
+        }
+        authorizationService.requireMerchantOwner(coupon.getShopId());
+        validateCoupon(coupon);
+        return super.save(coupon);
+    }
 
 
 
@@ -80,6 +101,11 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
     @Override
     @Transactional
     public void addFlashDeal(Coupon coupon) {
+        if (coupon == null) {
+            throw new com.campusdeal.exception.ValidationException("优惠券不能为空");
+        }
+        authorizationService.requireMerchantOwner(coupon.getShopId());
+        validateCoupon(coupon);
         // 保存优惠券
         save(coupon);
         // 保存秒杀信息
@@ -89,13 +115,41 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         seckillVoucher.setBeginTime(coupon.getBeginTime());
         seckillVoucher.setEndTime(coupon.getEndTime());
         seckillVoucherService.save(seckillVoucher);
-        //保存秒杀库存到redis中
-        stringRedisTemplate.opsForValue().set(FLASH_DEAL_STOCK_KEY + coupon.getId(), coupon.getStock().toString());
-        // T14：预写活动时间窗（begin|end epoch 毫秒），供 executeFlashDeal 做未开始/已结束拦截
-        if (coupon.getBeginTime() != null && coupon.getEndTime() != null) {
-            stringRedisTemplate.opsForValue().set(FLASH_DEAL_TIME_KEY + coupon.getId(),
-                    coupon.getBeginTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                            + "|" + coupon.getEndTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
+        Runnable publishAdmission = () -> {
+            stringRedisTemplate.opsForValue().set(FLASH_DEAL_STOCK_KEY + coupon.getId(), coupon.getStock().toString());
+            if (coupon.getBeginTime() != null && coupon.getEndTime() != null) {
+                stringRedisTemplate.opsForValue().set(FLASH_DEAL_TIME_KEY + coupon.getId(),
+                        coupon.getBeginTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                                + "|" + coupon.getEndTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
+            }
+            bloomFilterService.registerCommitted(coupon.getId());
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    publishAdmission.run();
+                }
+            });
+        } else {
+            publishAdmission.run();
+        }
+    }
+
+    private void validateCoupon(Coupon coupon) {
+        if (coupon.getShopId() == null || coupon.getTitle() == null || coupon.getTitle().isBlank()) {
+            throw new com.campusdeal.exception.ValidationException("店铺和标题不能为空");
+        }
+        if (coupon.getPayValue() == null || coupon.getPayValue() < 0
+                || coupon.getActualValue() == null || coupon.getActualValue() < 0) {
+            throw new com.campusdeal.exception.ValidationException("优惠券金额必须为非负数");
+        }
+        if (coupon.getType() != null && coupon.getType() == 1) {
+            if (coupon.getStock() == null || coupon.getStock() <= 0
+                    || coupon.getBeginTime() == null || coupon.getEndTime() == null
+                    || !coupon.getEndTime().isAfter(coupon.getBeginTime())) {
+                throw new com.campusdeal.exception.ValidationException("秒杀库存和有效期不合法");
+            }
         }
     }
 

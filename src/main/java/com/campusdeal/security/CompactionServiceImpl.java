@@ -67,7 +67,7 @@ public class CompactionServiceImpl implements CompactionService {
                 return llmSummary;
             }
         } catch (Exception e) {
-            log.warn("LLM 摘要压缩失败，降级为规则摘要: {}", e.getMessage());
+            log.warn("LLM 摘要压缩失败，降级为规则摘要: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
         return fallback;
     }

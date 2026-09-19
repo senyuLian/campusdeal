@@ -12,6 +12,8 @@ public class RedisConstants {
     public static final String CACHE_MERCHANT_KEY = "cache:merchant:";
 
     public static final String LOCK_MERCHANT_KEY = "lock:merchant:";
+    /** Dedicated lock namespace; never reuse a data/cache key as a lock. */
+    public static final String LOCK_CACHE_REBUILD_KEY = "lock:cache:rebuild:";
     public static final Long LOCK_MERCHANT_TTL = 10L;
 
     public static final String FLASH_DEAL_STOCK_KEY = "flashdeal:stock:";
@@ -20,5 +22,7 @@ public class RedisConstants {
     public static final String POST_LIKED_KEY = "post:liked:";
     public static final String FEED_KEY = "feed:";
     public static final String MERCHANT_GEO_KEY = "merchant:geo:";
+    /** Bounded GEO index used by the nearby-merchants query. */
+    public static final String MERCHANT_GEO_ALL_KEY = MERCHANT_GEO_KEY + "all";
     public static final String USER_SIGN_KEY = "sign:";
 }

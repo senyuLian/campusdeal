@@ -35,4 +35,9 @@ public interface OutboxService {
      * @param retryCount 重试次数
      */
     void updateStatus(Long id, OutboxStatus status, Integer retryCount);
+
+    /** Update lifecycle state and retain a bounded last failure reason. */
+    default void updateStatus(Long id, OutboxStatus status, Integer retryCount, String errorMsg) {
+        updateStatus(id, status, retryCount);
+    }
 }

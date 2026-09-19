@@ -59,6 +59,7 @@ class IndexBuilderTest {
         List<Document> docs = List.of(doc("faq-1", "退款"), doc("faq-2", "优惠券"));
         stubDocumentLoading(docs);
         ReflectionTestUtils.setField(builder, "apiKey", "test-key");
+        ReflectionTestUtils.setField(builder, "vectorEnabled", true);
         when(embedder.embedBatch(anyList())).thenReturn(List.of(new float[]{1f}, new float[]{2f}));
 
         builder.buildAll();
@@ -86,6 +87,7 @@ class IndexBuilderTest {
         List<Document> docs = List.of(doc("faq-1", "退款"), doc("faq-2", "优惠券"));
         stubDocumentLoading(docs);
         ReflectionTestUtils.setField(builder, "apiKey", "test-key");
+        ReflectionTestUtils.setField(builder, "vectorEnabled", true);
         when(embedder.embedBatch(anyList())).thenThrow(new RuntimeException("API down"));
 
         builder.buildAll();

@@ -12,7 +12,7 @@
 |---|---|
 | 商户 | 分类浏览、关键字搜索、GEO 附近商户（Redis GEO）、逻辑过期缓存防击穿 |
 | 优惠券 | 普通券 / 闪购券，优惠券列表与领取 |
-| 秒杀 | Bloom → Caffeine L1 → Redis Lua 三层快速失败，Kafka 异步落库（消费者 SETNX 幂等 + UNIQUE KEY 兜底 + Outbox 补偿） |
+| 秒杀 | 默认走 MySQL 可恢复订单意图 + Redis 预占，Kafka/Outbox 异步完成订单；旧 Redis Lua 路径可通过开关回退 |
 | 社交 | 帖子发布、点赞（Redis ZSet）、关注、共同关注、滚动分页 Feed |
 | AI 客服 | LangGraph4j ReAct 智能体、6 个函数调用工具（查单/退款/商户/优惠券/FAQ/知识图谱）、SSE 流式输出 |
 | RAG | BM25（内存）+ 向量（PGVector 可选）RRF 混合检索；知识图谱（Neo4j 可选）作为独立检索工具 |
@@ -28,7 +28,7 @@
 - **Hutool 5.7.17** · Lombok · commons-pool2 · Actuator
 - **LLM**：DeepSeek API（LangChain4j）
 - **Agent**：LangGraph4j（ReAct 状态图）
-- **消息**：Kafka（秒杀订单异步落库；broker 不可用时降级 Outbox 补偿重试）
+- **消息**：Kafka（可选；broker 不可用或关闭时由 Outbox/意图恢复调度器补偿）
 
 ---
 
@@ -62,17 +62,17 @@ src/main/java/com/campusdeal
 | 依赖 | 版本/位置 |
 |---|---|
 | JDK | **Java 17**（注意：系统默认 JDK 25 会破坏 Lombok，必须切 JDK 17） |
-| MySQL | `localhost:3306/campusdeal`（root / 123456） |
-| Redis | `localhost:6379`（密码 `123456`） |
-| Kafka | `localhost:9092`（可选：秒杀异步落库；未启动时降级 Outbox 补偿） |
-| DeepSeek | API Key（环境变量 `CAMPUSDEAL_DEEPSEEK_API_KEY` 或 `application-local.yaml`） |
+| MySQL | `CAMPUSDEAL_DB_URL` / `CAMPUSDEAL_DB_USERNAME` / `CAMPUSDEAL_DB_PASSWORD` |
+| Redis | `CAMPUSDEAL_REDIS_HOST` / `CAMPUSDEAL_REDIS_PORT` / `CAMPUSDEAL_REDIS_PASSWORD` |
+| Kafka | `CAMPUSDEAL_KAFKA_BOOTSTRAP_SERVERS`（通过 `CAMPUSDEAL_KAFKA_ENABLED` 开启） |
+| DeepSeek | API Key（环境变量 `CAMPUSDEAL_DEEPSEEK_API_KEY` 或未提交的 `application-local.yaml`） |
 
 > Canal / PGVector / Neo4j 均为可选组件：未部署时应用正常启动，对应能力（缓存失效 / 向量检索 / 知识图谱）自动降级。
 
 ### 构建与运行
 
 ```bash
-export JAVA_HOME="D:/program/develop/jdks/jdk17"
+export JAVA_HOME="<path-to-jdk17>"
 mvn compile
 mvn spring-boot:run
 ```
@@ -85,7 +85,7 @@ mvn spring-boot:run
 
 ### 前端静态资源
 
-图片上传目录：`SystemConstants.IMAGE_UPLOAD_DIR`（默认 nginx 下 `html/campusdeal/imgs`）。
+图片上传目录由 `CAMPUSDEAL_UPLOAD_ROOT` 配置（默认 `./data/uploads`）。上传返回资源 ID，删除使用受保护的 `POST /upload/delete`。
 
 ---
 
@@ -96,11 +96,11 @@ mvn spring-boot:run
 | 用户 | `/user/code` `/user/login` `/user/me` `/user/logout` `/user/public/{id}` | 手机号验证码登录，Redis Token；公开主页 |
 | 商户 | `/merchant/**` `/merchant-type/**` `/merchant/list/by-type` | 详情/列表/关键字/GEO 附近 |
 | 优惠券 | `/coupon/**` | 列表、领取、我的券 |
-| 秒杀 | `/coupon-order/seckill/{dealId}` | 闪购下单（受理后 Kafka 异步落库，返回字符串 orderId 防 JS 精度丢失） |
+| 秒杀 | `/coupon-order/seckill/{dealId}` / `/coupon-order/{orderId}` | 受理并查询订单状态；返回字符串 orderId 防 JS 精度丢失 |
 | 帖子 | `/post/**` `/follow/**` | 发布、点赞、关注、滚动分页 |
 | 签到 | `/user/sign` | 按月签到 + 连续天数 |
 | AI 客服 | `/agent/chat`（SSE）`/agent/confirm` `/agent/history/{id}` | 流式对话、敏感操作确认 |
-| 上传 | `/upload/**` | 图片上传（公开） |
+| 上传 | `/upload/post` / `/upload/delete` | 登录后上传与按资源 ID 删除 |
 
 SSE 事件协议：`thinking / tool_call / tool_result / confirm / chunk / done / error`。
 
@@ -108,15 +108,15 @@ SSE 事件协议：`thinking / tool_call / tool_result / confirm / chunk / done 
 
 ## 测试
 
-测试报告见 `doc/test-reports/`（00 基线 ~ 12 吞吐），覆盖缓存 / 秒杀 / 一致性 / Agent / RAG / 安全 / 性能 / 回归全链路：
+测试报告见 `doc/test-reports/`（00 基线 ~ 13 修复回归），覆盖缓存 / 秒杀 / 一致性 / Agent / RAG / 安全 / 性能 / 回归全链路：
 
 ```text
-doc/test-reports/    测试报告：00 基线 ~ 12 吞吐
+doc/test-reports/    测试报告：00 基线 ~ 13 修复回归
 doc/final-plan.md    顶层规划（项目概览 / 架构 / Phase 划分 / 技术决策）
 tools/               运行时回归脚本（api-smoke / concurrency / perf / throughput / security ...）
 ```
 
-- 单元测试：`mvn test`（**174/174 全绿**，JDK17）
+- 单元测试：`mvn test`（当前 **246/246 全绿**，JDK17）
 - 运行时回归：`node tools/<script>.js`（接口契约 40+、秒杀并发无超卖、安全护栏、RAG 降级、秒杀吞吐等）
 
 ### 核心测试指标
@@ -148,7 +148,7 @@ tools/               运行时回归脚本（api-smoke / concurrency / perf / th
 - **敏感操作**：退款等工具二次确认（60s 超时 + 归属校验）
 - **限流**：令牌桶（`rate-limit-per-minute` 可配）
 - **幻觉检测**：`hallucination-check` 输出校验
-- **越权防护**：Agent SSE 会话基于 ThreadLocal 用户身份，无跨用户泄漏
+- **越权防护**：Agent 会话、上传资源、商户/优惠券写操作都在服务层再次校验用户归属
 
 ---
 
@@ -156,7 +156,7 @@ tools/               运行时回归脚本（api-smoke / concurrency / perf / th
 
 - `CLAUDE.md` — 项目开发约定（结构、Redis Key 规范、构建注意）
 - `doc/final-plan.md` — 顶层规划文档
-- `doc/test-reports/` — 测试执行报告（00 基线 ~ 12 吞吐）
+- `doc/test-reports/` — 测试执行报告（00 基线 ~ 13 修复回归）
 
 ---
 

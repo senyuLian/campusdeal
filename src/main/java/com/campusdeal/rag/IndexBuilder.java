@@ -1,5 +1,7 @@
 package com.campusdeal.rag;
 
+import com.campusdeal.security.SensitiveLogSanitizer;
+
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,12 +43,15 @@ public class IndexBuilder implements ApplicationRunner {
     @Value("${campusdeal.deepseek.api-key:}")
     private String apiKey;
 
+    @Value("${campusdeal.pgvector.enabled:false}")
+    private boolean vectorEnabled = false;
+
     @Override
     public void run(ApplicationArguments args) {
         try {
             buildAll();
         } catch (Exception e) {
-            log.warn("知识索引构建失败（不影响应用启动）: {}", e.getMessage());
+            log.warn("知识索引构建失败（不影响应用启动）: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
@@ -70,7 +75,7 @@ public class IndexBuilder implements ApplicationRunner {
 
         // Step 3: 生成 Embedding（无 API Key 时跳过向量部分，BM25 仍可用）
         boolean embedded = false;
-        if (apiKey == null || apiKey.isBlank()) {
+        if (!vectorEnabled || apiKey == null || apiKey.isBlank()) {
             log.warn("未配置 DeepSeek API Key，跳过向量索引（BM25 关键词检索仍可用）");
         } else {
             try {
@@ -83,7 +88,7 @@ public class IndexBuilder implements ApplicationRunner {
                 }
                 embedded = true;
             } catch (Exception e) {
-                log.warn("Embedding 生成失败，跳过向量索引（BM25 仍可用）: {}", e.getMessage());
+            log.warn("Embedding 生成失败，跳过向量索引（BM25 仍可用）: {}", SensitiveLogSanitizer.exceptionSummary(e));
             }
         }
 
@@ -101,6 +106,7 @@ public class IndexBuilder implements ApplicationRunner {
                                     .embedding(c.getEmbedding())
                                     .metadata(Map.of(
                                             "docId", c.getDocId(),
+                                            "title", doc == null || doc.getTitle() == null ? "" : doc.getTitle(),
                                             "text", c.getText(),
                                             "source", doc == null ? "unknown" : doc.getSource(),
                                             "category", doc == null ? "general" : doc.getCategory()))
@@ -110,13 +116,27 @@ public class IndexBuilder implements ApplicationRunner {
                 vectorStore.batchInsert(entries);
                 log.info("写入 {} 条向量到 PGVector", entries.size());
             } catch (Exception e) {
-                log.warn("PGVector 写入失败（不影响启动）: {}", e.getMessage());
+            log.warn("PGVector 写入失败（不影响启动）: {}", SensitiveLogSanitizer.exceptionSummary(e));
             }
         }
 
-        // Step 5: 构建 BM25 索引（纯内存，始终执行）
-        allDocs.forEach(bm25Index::index);
-        log.info("BM25 索引构建完成，共 {} 篇文档", allDocs.size());
+        // Step 5: BM25 indexes the same canonical passages as PGVector. This
+        // keeps sparse and dense channels on one stable document/chunk ID.
+        Map<String, Document> docsById = allDocs.stream()
+                .collect(Collectors.toMap(Document::getId, Function.identity()));
+        for (DocumentChunk chunk : chunks) {
+            Document source = docsById.get(chunk.getDocId());
+            if (source == null) continue;
+            bm25Index.index(Document.builder()
+                    .id(chunk.getChunkId())
+                    .title(source.getTitle())
+                    .content(chunk.getText())
+                    .source(source.getSource())
+                    .category(source.getCategory())
+                    .metadata(Map.of("documentId", source.getId(), "chunkIndex", chunk.getChunkIndex()))
+                    .build());
+        }
+        log.info("BM25 索引构建完成，共 {} 个段落", chunks.size());
         log.info("=== 知识索引构建完成 ===");
     }
 

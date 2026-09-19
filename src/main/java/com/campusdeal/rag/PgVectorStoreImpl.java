@@ -1,6 +1,7 @@
 package com.campusdeal.rag;
 
 import cn.hutool.json.JSONUtil;
+import com.campusdeal.security.SensitiveLogSanitizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -43,20 +44,38 @@ public class PgVectorStoreImpl implements VectorStore {
         LIMIT ?
         """;
 
-    private static final RowMapper<VectorResult> ROW_MAPPER = (rs, rowNum) ->
-            VectorResult.builder()
-                    .docId(rs.getString("id"))
-                    .content(rs.getString("content"))
-                    .cosineSimilarity(rs.getDouble("similarity"))
-                    .build();
+    private static final RowMapper<VectorResult> ROW_MAPPER = (rs, rowNum) -> {
+        VectorResult.VectorResultBuilder builder = VectorResult.builder()
+                .docId(rs.getString("id"))
+                .content(rs.getString("content"))
+                .cosineSimilarity(rs.getDouble("similarity"));
+        try {
+            String metadata = rs.getString("metadata");
+            if (metadata != null && !metadata.isBlank()) {
+                Map<?, ?> values = JSONUtil.parseObj(metadata);
+                Object title = values.get("title");
+                Object source = values.get("source");
+                Object category = values.get("category");
+                builder.title(title == null ? "" : title.toString())
+                        .source(source == null ? "" : source.toString())
+                        .category(category == null ? "" : category.toString());
+            }
+        } catch (Exception ignored) {
+            // Metadata is enrichment; the canonical id/content remain usable.
+        }
+        return builder.build();
+    };
 
     @Value("${campusdeal.pgvector.url:}")
     private String url;
 
-    @Value("${campusdeal.pgvector.username:postgres}")
+    @Value("${campusdeal.pgvector.enabled:false}")
+    private boolean enabled;
+
+    @Value("${campusdeal.pgvector.username:}")
     private String username;
 
-    @Value("${campusdeal.pgvector.password:postgres}")
+    @Value("${campusdeal.pgvector.password:}")
     private String password;
 
     /** 测试注入点：@InjectMocks 会注入 mock；生产环境懒加载 */
@@ -72,7 +91,7 @@ public class PgVectorStoreImpl implements VectorStore {
         try {
             return jt.query(SEARCH_SQL, ROW_MAPPER, vectorStr, vectorStr, topK);
         } catch (Exception e) {
-            log.warn("PGVector 向量检索失败（数据源未就绪？）: {}", e.getMessage());
+            log.warn("PGVector 向量检索失败（数据源未就绪？）: {}", SensitiveLogSanitizer.exceptionSummary(e));
             return List.of();
         }
     }
@@ -86,7 +105,7 @@ public class PgVectorStoreImpl implements VectorStore {
         try {
             jt.update(INSERT_SQL, insertArgs(docId, embedding, metadata));
         } catch (Exception e) {
-            log.warn("PGVector 插入失败: {}", e.getMessage());
+            log.warn("PGVector 插入失败: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
@@ -103,7 +122,7 @@ public class PgVectorStoreImpl implements VectorStore {
         try {
             jt.batchUpdate(INSERT_SQL, batchArgs);
         } catch (Exception e) {
-            log.warn("PGVector 批量插入失败: {}", e.getMessage());
+            log.warn("PGVector 批量插入失败: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
@@ -116,7 +135,7 @@ public class PgVectorStoreImpl implements VectorStore {
         try {
             jt.update("DELETE FROM document_vectors WHERE id = ?", docId);
         } catch (Exception e) {
-            log.warn("PGVector 删除失败: {}", e.getMessage());
+            log.warn("PGVector 删除失败: {}", SensitiveLogSanitizer.exceptionSummary(e));
         }
     }
 
@@ -139,8 +158,8 @@ public class PgVectorStoreImpl implements VectorStore {
         }
         synchronized (this) {
             if (jdbcTemplate == null) {
-                if (url == null || url.isBlank()) {
-                    log.warn("campusdeal.pgvector.url 未配置，向量检索功能禁用（BM25 仍可用）");
+                if (!enabled || url == null || url.isBlank()) {
+                    log.debug("PGVector disabled by configuration; BM25 remains available");
                     return null;
                 }
                 DriverManagerDataSource ds = new DriverManagerDataSource(url, username, password);

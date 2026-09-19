@@ -1,5 +1,6 @@
 package com.campusdeal.agent;
 
+import com.campusdeal.security.SensitiveLogSanitizer;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -49,14 +50,15 @@ public class ToolRegistry {
     public String execute(String name, String argumentsJson) {
         ToolEntry entry = tools.get(name);
         if (entry == null) {
-            return "{\"error\":\"unknown tool: " + name + "\"}";
+            return "{\"error\":\"unknown tool\"}";
         }
         try {
             String result = entry.executor.execute(argumentsJson);
             return result == null ? "{}" : result;
         } catch (Exception e) {
-            log.error("Tool [{}] execution failed", name, e);
-            return "{\"error\":\"" + escape(e.getMessage()) + "\"}";
+            log.error("Tool [{}] execution failed: {}", name,
+                    SensitiveLogSanitizer.exceptionSummary(e));
+            return "{\"error\":\"tool execution failed\"}";
         }
     }
 
@@ -69,11 +71,6 @@ public class ToolRegistry {
                 .build()).toList();
     }
 
-
-    private static String escape(String s) {
-        if (s == null) return "unknown error";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
 
     private record ToolEntry(ToolMeta meta, ToolExecutor executor) {
     }

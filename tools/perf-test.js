@@ -51,7 +51,7 @@ function parseBulk(data) {
     return null;
 }
 async function redisCmd(...cmd) {
-    return parseBulk(await redisRaw([['AUTH', '123456'], cmd]));
+    return parseBulk(await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], cmd]));
 }
 async function req(method, path, { token, body, query } = {}) {
     let url = BASE + path;

@@ -55,7 +55,7 @@ public class OutputVerifierImpl implements OutputVerifier {
                 hallucinated = true;
                 confidence -= 0.5;
                 hallucinationDesc = hr.description();
-                log.warn("Hallucination detected: {}", hallucinationDesc);
+                log.warn("Hallucination detected: severity={}", hr.severity());
                 if ("HIGH".equals(hr.severity())) {
                     return VerificationResult.builder()
                             .passed(false)

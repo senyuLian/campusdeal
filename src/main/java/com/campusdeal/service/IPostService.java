@@ -20,9 +20,15 @@ public interface IPostService extends IService<Post> {
 
     Result likeBlog(Long id);
 
+    /** Idempotent final-state transition: true likes, false unlikes. */
+    Result likeBlog(Long id, Boolean isLike);
+
     Result queryBlogLikes(Long id);
 
     Result saveBlog(Post post);
 
     Result queryBlogOfFollow(Long max, Integer offset);
+
+    /** Cursor based feed pagination; the cursor encodes the snapshot score and tie member. */
+    Result queryBlogOfFollow(String cursor);
 }

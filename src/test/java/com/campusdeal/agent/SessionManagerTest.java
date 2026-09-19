@@ -13,6 +13,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -24,8 +25,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -43,6 +46,8 @@ class SessionManagerTest {
     @Mock
     HashOperations<String, Object, Object> hashOps;
     @Mock
+    ValueOperations<String, String> valueOps;
+    @Mock
     CompactionService compactionService;
 
     @InjectMocks
@@ -51,6 +56,12 @@ class SessionManagerTest {
     @BeforeEach
     void setUp() {
         when(stringRedisTemplate.opsForHash()).thenReturn(hashOps);
+        lenient().when(hashOps.putIfAbsent(anyString(), any(), any())).thenReturn(true);
+        lenient().when(stringRedisTemplate.opsForValue()).thenReturn(valueOps);
+        lenient().when(valueOps.setIfAbsent(anyString(), anyString(), anyLong(), any(java.util.concurrent.TimeUnit.class)))
+                .thenReturn(true);
+        lenient().when(hashOps.get("agent:session:s1", "userId")).thenReturn("1");
+        lenient().when(hashOps.get("agent:session:s1", "version")).thenReturn("0");
         // 仅 SP-04/SP-05 触发压缩，其余用例不调用，故用 lenient
         lenient().when(compactionService.compact(anyList()))
                 .thenReturn(CompactedSummary.builder().goal("目标").progress("进度").build());
@@ -133,12 +144,48 @@ class SessionManagerTest {
         verify(stringRedisTemplate).expire(eq("agent:session:s1"), any(Duration.class));
     }
 
+    @Test
+    @DisplayName("SP-06 owner/version 校验：旧版本不能覆盖，删除必须匹配所有者")
+    void sp06_ownerAndVersionAreEnforced() {
+        AgentState state = mockState(List.of());
+        when(state.getVersion()).thenReturn(1L);
+
+        assertThatThrownBy(() -> sessionManager.save("s1", state))
+                .isInstanceOf(com.campusdeal.exception.ConflictException.class);
+
+        when(hashOps.get("agent:session:s1", "userId")).thenReturn("2");
+        assertThatThrownBy(() -> sessionManager.delete("s1", 1L))
+                .isInstanceOf(com.campusdeal.exception.ForbiddenException.class);
+    }
+
+    @Test
+    @DisplayName("SP-07 ownerless legacy session is never implicitly claimed and receives expiry")
+    void sp07_ownerlessSessionExpiresInsteadOfBeingClaimed() {
+        when(hashOps.entries("agent:session:legacy")).thenReturn(Map.of("messages", "[]"));
+
+        assertThatThrownBy(() -> sessionManager.getOrCreate("legacy", 1L))
+                .isInstanceOf(com.campusdeal.exception.ForbiddenException.class);
+
+        verify(stringRedisTemplate).expire(eq("agent:session:legacy"), any(Duration.class));
+    }
+
+    @Test
+    @DisplayName("SP-08 concurrent save holding the session lock returns a retryable conflict")
+    void sp08_lockContentionIsConflict() {
+        when(valueOps.setIfAbsent(anyString(), anyString(), anyLong(), any(java.util.concurrent.TimeUnit.class)))
+                .thenReturn(false);
+        AgentState state = mockState(List.of());
+
+        assertThatThrownBy(() -> sessionManager.save("s1", state))
+                .isInstanceOf(com.campusdeal.exception.ConflictException.class);
+    }
+
     private AgentState mockState(List<MessageRecord> history) {
         AgentState state = org.mockito.Mockito.mock(AgentState.class);
-        when(state.getMessages()).thenReturn(history);
-        when(state.getUserInput()).thenReturn("提问");
-        when(state.getFinalAnswer()).thenReturn("回答");
-        when(state.getUserId()).thenReturn(1L);
+        lenient().when(state.getMessages()).thenReturn(history);
+        lenient().when(state.getUserInput()).thenReturn("提问");
+        lenient().when(state.getFinalAnswer()).thenReturn("回答");
+        lenient().when(state.getUserId()).thenReturn(1L);
         return state;
     }
 }

@@ -18,6 +18,8 @@ public class AgentSession {
 
     private String sessionId;
     private Long userId;
+    /** Monotonically increasing save version used for optimistic concurrency checks. */
+    private long version;
     private List<MessageRecord> messages;
     private String summary;
 }

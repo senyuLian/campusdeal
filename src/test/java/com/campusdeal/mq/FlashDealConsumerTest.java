@@ -70,6 +70,7 @@ class FlashDealConsumerTest {
     void shouldSkipAllDuplicates() {
         List<ConsumerRecord<String, FlashDealOrderMessage>> records = List.of(rec(1L, 0, 100));
         when(idempotentService.tryMarkBatch(anyList())).thenReturn(List.of(false));
+        when(couponOrderMapper.selectById(1L)).thenReturn(new CouponOrder().setId(1L));
 
         consumer.onMessage(records, ack);
 
@@ -83,6 +84,7 @@ class FlashDealConsumerTest {
         List<ConsumerRecord<String, FlashDealOrderMessage>> records =
                 List.of(rec(1L, 0, 100), rec(2L, 1, 101), rec(3L, 2, 102));
         when(idempotentService.tryMarkBatch(anyList())).thenReturn(List.of(true, false, true));
+        when(couponOrderMapper.selectById(2L)).thenReturn(new CouponOrder().setId(2L));
 
         consumer.onMessage(records, ack);
 
@@ -100,7 +102,8 @@ class FlashDealConsumerTest {
         when(idempotentService.tryMarkBatch(anyList())).thenReturn(List.of(true, true));
         when(couponOrderMapper.batchInsertIgnore(anyList())).thenThrow(new RuntimeException("db down"));
 
-        consumer.onMessage(records, ack);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> consumer.onMessage(records, ack))
+                .isInstanceOf(IllegalStateException.class);
 
         verify(ack, never()).acknowledge();  // 不 ack → Kafka 重投
         verify(outboxService, times(2)).record(anyString(), anyString(), eq(OutboxStatus.PENDING));
@@ -123,16 +126,17 @@ class FlashDealConsumerTest {
     }
 
     @Test
-    @DisplayName("KB-08: 补偿路径 clearMark 失败不逃逸，仍写 PENDING 且不 ack")
+    @DisplayName("KB-08: 批量持久化失败在补偿后向上抛出，交给 Kafka 重试")
     void shouldNotPropagateWhenClearMarkFails() {
         List<ConsumerRecord<String, FlashDealOrderMessage>> records = List.of(rec(1L, 0, 100));
         when(idempotentService.tryMarkBatch(anyList())).thenReturn(List.of(true));
         when(couponOrderMapper.batchInsertIgnore(anyList())).thenThrow(new RuntimeException("db down"));
         doThrow(new RuntimeException("redis down")).when(idempotentService).clearMark(anyString());
 
-        consumer.onMessage(records, ack);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> consumer.onMessage(records, ack))
+                .isInstanceOf(IllegalStateException.class);
 
-        // clearMark 抛异常被吞掉，不影响写 PENDING 与「不 ack」的语义
+        // clearMark 抛异常被吞掉，但持久化异常仍需交给 Kafka 重试/DLT
         verify(ack, never()).acknowledge();
         verify(outboxService, times(1)).record(anyString(), anyString(), eq(OutboxStatus.PENDING));
     }
@@ -143,6 +147,7 @@ class FlashDealConsumerTest {
         when(idempotentService.tryMark(anyString())).thenReturn(true);
         when(couponOrderMapper.insert(any(CouponOrder.class)))
                 .thenThrow(new DuplicateKeyException("duplicate"));
+        when(couponOrderMapper.selectById(1L)).thenReturn(new CouponOrder().setId(1L));
 
         // 不应抛出异常（OB-03 的前提：补偿时订单已存在视为成功）
         consumer.processMessage(message(1L));

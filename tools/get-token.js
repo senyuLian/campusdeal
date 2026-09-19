@@ -34,7 +34,7 @@ function parseBulk(data) {
 
 async function main() {
     await fetch(`${BASE}/user/code?phone=${PHONE}`, { method: 'POST' });
-    const code = await redisRaw([['AUTH', '123456'], ['GET', `login:code:${PHONE}`]]).then(parseBulk);
+    const code = await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], ['GET', `login:code:${PHONE}`]]).then(parseBulk);
     const r = await fetch(`${BASE}/user/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

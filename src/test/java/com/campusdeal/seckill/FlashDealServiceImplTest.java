@@ -177,6 +177,7 @@ class FlashDealServiceImplTest {
         when(bloomFilter.mightContain(101L)).thenReturn(true);
         when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
                 .thenReturn(-1L);  // T16: -1 = 库存不足
+        when(valueOps.get(RedisConstants.FLASH_DEAL_STOCK_KEY + "101")).thenReturn("0");
 
         Result result = service.executeFlashDeal(101L);
 
@@ -184,6 +185,22 @@ class FlashDealServiceImplTest {
         assertThat(result.getErrorMsg()).contains("Out of stock");
         // 无库存结果回填本地缓存，后续请求走 L1 直接拒绝
         assertThat(stockCache.getIfPresent(101L)).isFalse();
+    }
+
+    @Test
+    @DisplayName("FD-06: Redis 库存镜像缺失时返回不可用，不写永久售罄标记")
+    void shouldNotCacheSoldOutWhenStockMirrorMissing() {
+        when(bloomFilter.mightContain(101L)).thenReturn(true);
+        when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any()))
+                .thenReturn(-1L);
+        when(valueOps.get(RedisConstants.FLASH_DEAL_STOCK_KEY + "101")).thenReturn(null);
+
+        Result result = service.executeFlashDeal(101L);
+
+        assertThat(result.getSuccess()).isFalse();
+        assertThat(result.getErrorMsg()).contains("不可用");
+        assertThat(stockCache.getIfPresent(101L)).isNull();
+        verify(valueOps, never()).set(RedisConstants.FLASH_DEAL_STOCK_KEY + "101", "0");
     }
 
     @Test

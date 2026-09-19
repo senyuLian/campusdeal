@@ -26,6 +26,10 @@ public class AgentState extends org.bsc.langgraph4j.state.AgentState {
         return value("userId").map(o -> Long.valueOf(o.toString())).orElse(null);
     }
 
+    public long getVersion() {
+        return value("version").map(o -> ((Number) o).longValue()).orElse(0L);
+    }
+
     public String getUserInput() {
         return value("userInput").map(Object::toString).orElse("");
     }

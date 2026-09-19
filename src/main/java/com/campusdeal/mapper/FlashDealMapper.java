@@ -2,6 +2,7 @@ package com.campusdeal.mapper;
 
 import com.campusdeal.entity.FlashDeal;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Update;
 
 /**
  * <p>
@@ -12,5 +13,11 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
  * @since 2022-01-04
  */
 public interface FlashDealMapper extends BaseMapper<FlashDeal> {
+
+    @Update("UPDATE tb_seckill_voucher SET stock = stock - 1, update_time = CURRENT_TIMESTAMP WHERE voucher_id = #{dealId} AND stock > 0")
+    int decrementStock(@org.apache.ibatis.annotations.Param("dealId") Long dealId);
+
+    @Update("UPDATE tb_seckill_voucher SET stock = stock + 1, update_time = CURRENT_TIMESTAMP WHERE voucher_id = #{dealId}")
+    int incrementStock(@org.apache.ibatis.annotations.Param("dealId") Long dealId);
 
 }

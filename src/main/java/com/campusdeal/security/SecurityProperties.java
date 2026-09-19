@@ -32,4 +32,10 @@ public class SecurityProperties {
 
     /** 限流：每分钟每用户最大请求数 */
     private int rateLimitPerMinute = 10;
+
+    /** 验证码发送：每个手机号每分钟最大次数 */
+    private int verificationSendPerMinute = 3;
+
+    /** 验证码校验失败：每个手机号每分钟最大次数 */
+    private int verificationAttemptPerMinute = 10;
 }

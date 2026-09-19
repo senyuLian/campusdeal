@@ -15,6 +15,9 @@ import lombok.NoArgsConstructor;
 public class VectorResult {
 
     private String docId;
+    private String title;
     private String content;
+    private String source;
+    private String category;
     private double cosineSimilarity;
 }

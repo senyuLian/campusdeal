@@ -8,10 +8,10 @@ CREATE TABLE IF NOT EXISTS `outbox` (
   `topic`       VARCHAR(64)  DEFAULT NULL            COMMENT 'Kafka topic',
   `payload`     TEXT                                 COMMENT '消息体 JSON',
   `status`      VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING / PROCESSED / FAILED',
-  `retry_count` INT          DEFAULT 0               COMMENT '重试次数',
+  `retry_count` INT          NOT NULL DEFAULT 0       COMMENT '重试次数',
   `error_msg`   VARCHAR(512) DEFAULT NULL            COMMENT '最后一次错误信息',
-  `create_time` DATETIME     DEFAULT NULL            COMMENT '创建时间',
-  `update_time` DATETIME     DEFAULT NULL            COMMENT '更新时间',
+  `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
   KEY `idx_status_create` (`status`, `create_time`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='本地消息表（秒杀订单补偿）';

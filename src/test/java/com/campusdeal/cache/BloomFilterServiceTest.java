@@ -1,14 +1,17 @@
 package com.campusdeal.cache;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.campusdeal.config.ReliabilityMetrics;
 import com.campusdeal.entity.FlashDeal;
 import com.campusdeal.mapper.FlashDealMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -107,5 +110,23 @@ class BloomFilterServiceTest {
         when(flashDealMapper.selectList(any(Wrapper.class))).thenReturn(List.of(activeDeal(1L)));
         bloomFilter.rebuild();
         assertThat(bloomFilter.mightContain(1L)).isTrue();
+    }
+
+    @Test
+    @DisplayName("BF-M1: 重建失败与成功均记录可观测结果")
+    void shouldRecordRebuildTelemetry() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ReflectionTestUtils.setField(bloomFilter, "reliabilityMetrics", new ReliabilityMetrics(registry));
+        when(flashDealMapper.selectList(any(Wrapper.class)))
+                .thenThrow(new RuntimeException("db down"))
+                .thenReturn(List.of(activeDeal(7L)));
+
+        bloomFilter.afterPropertiesSet();
+        bloomFilter.rebuild();
+
+        assertThat(registry.get("campusdeal.bloom")
+                .tag("outcome", "rebuild_failure").counter().count()).isEqualTo(1.0);
+        assertThat(registry.get("campusdeal.bloom")
+                .tag("outcome", "rebuild").counter().count()).isEqualTo(1.0);
     }
 }

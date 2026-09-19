@@ -1,9 +1,11 @@
 package com.campusdeal.mq;
 
+import com.campusdeal.security.SensitiveLogSanitizer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.Resource;
@@ -16,6 +18,7 @@ import java.util.concurrent.TimeUnit;
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(prefix = "campusdeal.kafka", name = "enabled", havingValue = "true")
 public class FlashDealProducerImpl implements FlashDealProducer {
 
     /**
@@ -46,8 +49,8 @@ public class FlashDealProducerImpl implements FlashDealProducer {
             kafkaTemplate.send(record).get(SEND_CONFIRM_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             return true;
         } catch (Exception e) {
-            log.warn("Kafka send failed, will compensate via outbox: orderId={}",
-                    message.getOrderId(), e);
+            log.warn("Kafka send failed, will compensate via outbox: orderId={}, error={}",
+                    message.getOrderId(), SensitiveLogSanitizer.exceptionSummary(e));
             return false;
         }
     }

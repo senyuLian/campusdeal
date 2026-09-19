@@ -1,28 +1,39 @@
 server:
   port: 8081
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
 spring:
   profiles:
-    active: local  # 本地开发配置（含 DeepSeek API Key 等敏感项）见 application-local.yaml，已 gitignore
+    active: ${SPRING_PROFILES_ACTIVE:local}
   flyway:
-    enabled: false  # 如果你不需要数据库迁移
+    enabled: ${CAMPUSDEAL_FLYWAY_ENABLED:false}
+    baseline-on-migrate: ${CAMPUSDEAL_FLYWAY_BASELINE_ON_MIGRATE:true}
+    baseline-version: ${CAMPUSDEAL_FLYWAY_BASELINE_VERSION:1}
+    locations: classpath:db/migration
   liquibase:
     enabled: false
   application:
     name: campus-deal
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/campusdeal?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    password: 123456
+    url: ${CAMPUSDEAL_DB_URL:jdbc:mysql://localhost:3306/campusdeal?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${CAMPUSDEAL_DB_USERNAME:root}
+    password: ${CAMPUSDEAL_DB_PASSWORD:}
     hikari:
       # T16：秒杀同步落库 30 并发时，默认池(10)会让后半请求排队等 DB 连接，拉高 S1 尾延迟。
       # 扩到 30 后 30 并发 INSERT 全部并行（单条 INSERT ~2-5ms）。
       maximum-pool-size: 30
   data:
     redis:
-        host: localhost
-        port: 6379
-        password: 123456
+        host: ${CAMPUSDEAL_REDIS_HOST:localhost}
+        port: ${CAMPUSDEAL_REDIS_PORT:6379}
+        password: ${CAMPUSDEAL_REDIS_PASSWORD:}
         lettuce:
           pool:
             # T16：本环境（Windows 本机 Redis 3.2）实测共享连接并发延迟优于显式连接池，
@@ -33,7 +44,7 @@ spring:
             min-idle: 1
 #            time-between-eviction-runs: 10s
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${CAMPUSDEAL_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
@@ -59,8 +70,7 @@ spring:
         spring.json.trusted.packages: com.campusdeal.mq
     listener:
       ack-mode: manual
-      # 异步落库：Consumer 成为唯一落库路径，必须启用
-      auto-startup: true
+      auto-startup: ${CAMPUSDEAL_KAFKA_ENABLED:false}
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:
@@ -71,6 +81,14 @@ mybatis-plus:
 
 # ===== Phase 2: 多级缓存与布隆过滤器 =====
 campusdeal:
+  upload:
+    root: ${CAMPUSDEAL_UPLOAD_ROOT:./data/uploads}
+    max-size-bytes: ${CAMPUSDEAL_UPLOAD_MAX_SIZE_BYTES:5242880}
+    allowed-content-types: ${CAMPUSDEAL_UPLOAD_ALLOWED_CONTENT_TYPES:image/jpeg,image/png,image/gif,image/webp}
+  health:
+    max-outbox-age-minutes: ${CAMPUSDEAL_HEALTH_MAX_OUTBOX_AGE_MINUTES:15}
+    max-pending-intents: ${CAMPUSDEAL_HEALTH_MAX_PENDING_INTENTS:100}
+    max-bloom-rebuild-age-minutes: ${CAMPUSDEAL_HEALTH_MAX_BLOOM_REBUILD_AGE_MINUTES:15}
   cache:
     stock-ttl-seconds: 1        # 秒杀库存标记缓存 TTL
     stock-max-size: 10000
@@ -81,12 +99,22 @@ campusdeal:
     fpp: 0.01                   # 误判率 1%
     rebuild-interval-seconds: 300  # 定时重建周期（秒）
   kafka:
+    enabled: ${CAMPUSDEAL_KAFKA_ENABLED:false}
     topic:
       flash-deal-orders: flash-deal-orders   # 秒杀订单 Topic
+  flashdeal:
+    durable-acceptance-enabled: ${CAMPUSDEAL_FLASH_DURABLE_ACCEPTANCE_ENABLED:true}
+    durable-acceptance-cutover-enabled: ${CAMPUSDEAL_FLASH_DURABLE_ACCEPTANCE_CUTOVER_ENABLED:true}
+    durable-acceptance-shadow-enabled: ${CAMPUSDEAL_FLASH_DURABLE_ACCEPTANCE_SHADOW_ENABLED:false}
+    legacy-outbox-repair-enabled: ${CAMPUSDEAL_FLASH_LEGACY_OUTBOX_REPAIR_ENABLED:false}
+    recovery-enabled: ${CAMPUSDEAL_FLASH_RECOVERY_ENABLED:true}
+    reservation-recovery-interval-ms: ${CAMPUSDEAL_FLASH_RESERVATION_RECOVERY_INTERVAL_MS:30000}
+    redis-recovery-interval-ms: ${CAMPUSDEAL_FLASH_REDIS_RECOVERY_INTERVAL_MS:60000}
   canal:
-    host: localhost
-    port: 11111
-    destination: example
+    enabled: ${CAMPUSDEAL_CANAL_ENABLED:false}
+    host: ${CAMPUSDEAL_CANAL_HOST:localhost}
+    port: ${CAMPUSDEAL_CANAL_PORT:11111}
+    destination: ${CAMPUSDEAL_CANAL_DESTINATION:example}
   # ===== Phase 3 (Module 04): AI Agent =====
   # DeepSeek API Key：环境变量注入；本地开发 key 见 application-local.yaml（已 gitignore）
   deepseek:
@@ -96,6 +124,7 @@ campusdeal:
     embedding-model: ${CAMPUSDEAL_DEEPSEEK_EMBEDDING_MODEL:deepseek-embedding}  # DeepSeek Embedding 模型（1024 维）
     embedding-dimension: ${CAMPUSDEAL_DEEPSEEK_EMBEDDING_DIMENSION:1024}
   agent:
+    enabled: ${CAMPUSDEAL_AGENT_ENABLED:true}
     max-iterations: 5   # ReAct 循环最大迭代次数（think 节点）
   # ===== Phase 3 (Module 06): 安全与上下文管理 =====
   security:
@@ -106,22 +135,30 @@ campusdeal:
     hallucination-check: true      # 输出幻觉检测开关
     append-safety-note: false      # 是否在回复末尾附加安全提示
     rate-limit-per-minute: 10      # 每用户每分钟最大请求数
+    verification-send-per-minute: ${CAMPUSDEAL_VERIFICATION_SEND_PER_MINUTE:3}
+    verification-attempt-per-minute: ${CAMPUSDEAL_VERIFICATION_ATTEMPT_PER_MINUTE:10}
   # ===== Phase 3 (Module 05): 向量存储 PGVector =====
   # 留空时向量检索禁用（应用照常启动，BM25 关键词检索仍可用）
   pgvector:
+    enabled: ${CAMPUSDEAL_PGVECTOR_ENABLED:false}
+    dimension: ${CAMPUSDEAL_PGVECTOR_DIMENSION:${CAMPUSDEAL_DEEPSEEK_EMBEDDING_DIMENSION:1024}}
+    schema-location: ${CAMPUSDEAL_PGVECTOR_SCHEMA_LOCATION:classpath:db/pgvector/V1__pgvector_schema.sql}
     url: ${CAMPUSDEAL_PGVECTOR_URL:}
-    username: ${CAMPUSDEAL_PGVECTOR_USERNAME:postgres}
-    password: ${CAMPUSDEAL_PGVECTOR_PASSWORD:postgres}
+    username: ${CAMPUSDEAL_PGVECTOR_USERNAME:}
+    password: ${CAMPUSDEAL_PGVECTOR_PASSWORD:}
+  rag:
+    reindex: ${CAMPUSDEAL_RAG_REINDEX:false}
+    reindex-checkpoint: ${CAMPUSDEAL_RAG_REINDEX_CHECKPOINT:./data/rag-reindex.checkpoint}
   # ===== Phase 3 (Module 05): Neo4j 知识图谱 =====
   # Driver 懒加载，实例未启动时应用照常启动，图谱查询降级为空结果
   neo4j:
+    enabled: ${CAMPUSDEAL_NEO4J_ENABLED:false}
     uri: ${CAMPUSDEAL_NEO4J_URI:bolt://localhost:7687}
-    user: ${CAMPUSDEAL_NEO4J_USER:neo4j}
-    password: ${CAMPUSDEAL_NEO4J_PASSWORD:neo4j}
+    user: ${CAMPUSDEAL_NEO4J_USER:}
+    password: ${CAMPUSDEAL_NEO4J_PASSWORD:}
 
 
 
 logging:
   level:
     com.campusdeal: info
-

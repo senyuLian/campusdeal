@@ -5,8 +5,10 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.campusdeal.entity.Outbox;
 import com.campusdeal.mapper.OutboxMapper;
 import com.campusdeal.service.OutboxService;
+import com.campusdeal.security.SensitiveLogSanitizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.Resource;
@@ -19,6 +21,7 @@ import java.util.List;
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(prefix = "campusdeal.kafka", name = "enabled", havingValue = "true")
 public class OutboxScheduler {
 
     @Resource
@@ -44,7 +47,7 @@ public class OutboxScheduler {
             );
         } catch (Exception e) {
             // P0-2 防御：表缺失/DB 抖动时降级为单条 warn，避免每 30s 刷错误日志
-            log.warn("Outbox compensation skipped: {}", e.getMessage());
+            log.warn("Outbox compensation skipped: {}", SensitiveLogSanitizer.exceptionSummary(e));
             return;
         }
 
@@ -58,17 +61,26 @@ public class OutboxScheduler {
                         JSONUtil.toBean(msg.getPayload(), FlashDealOrderMessage.class);
                 // 重试处理（幂等服务 + MySQL UNIQUE KEY 保证不会重复落库）
                 flashDealConsumer.processMessage(orderMsg);
-                outboxService.updateStatus(msg.getId(), OutboxStatus.PROCESSED, msg.getRetryCount());
+                outboxService.updateStatus(msg.getId(), OutboxStatus.PROCESSED, msg.getRetryCount(), null);
             } catch (Exception e) {
                 int newRetryCount = msg.getRetryCount() + 1;
                 if (newRetryCount >= MAX_RETRY) {
-                    outboxService.updateStatus(msg.getId(), OutboxStatus.FAILED, newRetryCount);
+                    outboxService.updateStatus(msg.getId(), OutboxStatus.FAILED, newRetryCount,
+                            truncate(e));
                     log.error("Outbox message FAILED after {} retries: messageId={}",
-                            MAX_RETRY, msg.getMessageId(), e);
+                            MAX_RETRY, msg.getMessageId(), SensitiveLogSanitizer.exceptionSummary(e));
                 } else {
-                    outboxService.updateStatus(msg.getId(), OutboxStatus.PENDING, newRetryCount);
+                    outboxService.updateStatus(msg.getId(), OutboxStatus.PENDING, newRetryCount,
+                            truncate(e));
                 }
             }
         }
+    }
+
+    private String truncate(Exception error) {
+        String message = error == null ? null : error.getMessage();
+        if (message == null || message.isBlank()) return "RETRY_FAILED";
+        String redacted = SensitiveLogSanitizer.redact(message);
+        return redacted.length() > 500 ? redacted.substring(0, 500) : redacted;
     }
 }

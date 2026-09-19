@@ -12,7 +12,7 @@
  */
 const { execFileSync } = require('child_process');
 const net = require('net');
-const MYSQL_EXE = 'D:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe';
+const MYSQL_EXE = process.env.CAMPUSDEAL_MYSQL_EXE || 'mysql';
 
 const BASE = 'http://localhost:8081';
 const PHONE = '13800001111';
@@ -54,7 +54,7 @@ function parseBulk(data) {
 }
 async function redis(cmd) {
     const args = cmd.trim().split(/\s+/);
-    const raw = await redisRaw([['AUTH', '123456'], args]);
+    const raw = await redisRaw([['AUTH', process.env.CAMPUSDEAL_REDIS_PASSWORD || ''], args]);
     return parseBulk(raw);
 }
 
@@ -86,7 +86,7 @@ async function login(phone = PHONE) {
 // ---------- MySQL ----------
 function mysql(q) {
     try {
-        return execFileSync(MYSQL_EXE, ['-uroot', '-p123456', '-N', '-e', q], { encoding: 'utf8' }).trim();
+        return execFileSync(MYSQL_EXE, ['-uroot', '-p' + (process.env.CAMPUSDEAL_DB_PASSWORD || ''), '-N', '-e', q], { encoding: 'utf8' }).trim();
     } catch (e) {
         return 'ERR:' + ((e.stderr && e.stderr.toString()) || e.message || '');
     }

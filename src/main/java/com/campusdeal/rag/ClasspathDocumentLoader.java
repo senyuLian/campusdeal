@@ -1,5 +1,7 @@
 package com.campusdeal.rag;
 
+import com.campusdeal.security.SensitiveLogSanitizer;
+
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
@@ -62,7 +64,8 @@ public class ClasspathDocumentLoader implements DocumentLoader {
                         .build());
             }
         } catch (IOException e) {
-            log.warn("加载 RAG 文档失败（目录可能为空）: {} -> {}", location, e.getMessage());
+            log.warn("加载 RAG 文档失败（目录可能为空）: {} -> {}", location,
+                    SensitiveLogSanitizer.exceptionSummary(e));
         }
         return docs;
     }
@@ -97,6 +100,9 @@ public class ClasspathDocumentLoader implements DocumentLoader {
         if (text == null || text.isBlank()) {
             return chunks;
         }
+        if (CHUNK_SIZE <= 0 || CHUNK_OVERLAP < 0 || CHUNK_OVERLAP >= CHUNK_SIZE) {
+            throw new IllegalStateException("Invalid chunk size/overlap configuration");
+        }
         int start = 0;
         int idx = 0;
         while (start < text.length()) {
@@ -111,13 +117,17 @@ public class ClasspathDocumentLoader implements DocumentLoader {
             String chunkText = text.substring(start, end).trim();
             if (!chunkText.isEmpty()) {
                 chunks.add(DocumentChunk.builder()
-                        .chunkId(document.getId() + "-c" + idx)
+                        .chunkId(document.getId() + "#" + idx)
                         .docId(document.getId())
                         .text(chunkText)
                         .chunkIndex(idx++)
                         .build());
             }
-            // 带重叠前进，保证跨块语义连贯
+            // Once the emitted chunk reaches the source end, stop.  Advancing
+            // by overlap after this point used to emit repeated suffix chunks.
+            if (end >= text.length()) {
+                break;
+            }
             start = Math.max(end - CHUNK_OVERLAP, start + 1);
         }
         return chunks;
