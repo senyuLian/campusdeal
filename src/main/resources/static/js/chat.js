@@ -32,15 +32,19 @@
     }
 
     function showLoginPanel() {
+        document.body.classList.remove('is-authenticated');
         $('#login-panel').classList.remove('hidden');
         $('#chat-input-area').classList.add('hidden');
         $('#logout-btn').classList.add('hidden');
+        $('#session-badge').textContent = '未登录';
     }
 
     function hideLoginPanel() {
+        document.body.classList.add('is-authenticated');
         $('#login-panel').classList.add('hidden');
         $('#chat-input-area').classList.remove('hidden');
         $('#logout-btn').classList.remove('hidden');
+        if (!sessionId) $('#session-badge').textContent = '新会话';
     }
 
     function sendCode() {
@@ -82,6 +86,7 @@
     function doLogin() {
         const phone = $('#login-phone').value.trim();
         const code = $('#login-code').value.trim();
+        const button = $('#login-btn');
         if (!/^1[3-9]\d{9}$/.test(phone)) {
             setLoginMsg('请输入正确的手机号', true);
             return;
@@ -90,6 +95,9 @@
             setLoginMsg('请输入验证码', true);
             return;
         }
+        button.disabled = true;
+        button.querySelector('span').textContent = '正在登录…';
+        setLoginMsg('');
         fetch('/user/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -100,20 +108,29 @@
                 if (result && result.success && result.data) {
                     localStorage.setItem(TOKEN_KEY, result.data);
                     hideLoginPanel();
-                    appendMessage('assistant', '✅ 登录成功！我是 CampusDeal 智能助手，可以帮您查询订单、浏览优惠券、查找商户等。');
+                    showWelcomeMessage('登录成功！我是 CampusDeal 智能助手，可以帮你查订单、找商户，也可以看看最近的优惠活动。');
                     setLoginMsg('');
                 } else {
                     setLoginMsg((result && result.errorMsg) || '登录失败，请检查验证码', true);
                 }
             })
-            .catch(function () { setLoginMsg('网络异常，登录失败', true); });
+            .catch(function () { setLoginMsg('网络异常，登录失败', true); })
+            .finally(function () {
+                button.disabled = false;
+                button.querySelector('span').textContent = '进入 CampusDeal';
+            });
     }
 
     function logout() {
         localStorage.removeItem(TOKEN_KEY);
+        sessionId = null;
+        currentAssistantMsg = null;
+        currentContentDiv = null;
+        thinkingEl = null;
         showLoginPanel();
         $('#chat-messages').innerHTML = '';
-        $('#session-badge').textContent = '未登录';
+        $('#login-code').value = '';
+        $('#login-phone').focus();
     }
 
     // ======================= DOM 工具 =======================
@@ -123,6 +140,11 @@
     function scrollToBottom() {
         const container = $('#chat-messages');
         container.scrollTop = container.scrollHeight;
+    }
+
+    function resizeComposer(input) {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 128) + 'px';
     }
 
     function escapeHtml(text) {
@@ -147,14 +169,54 @@
         return html;
     }
 
+    function avatarMarkup(role) {
+        if (role === 'user') {
+            return '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+                '<path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/>' +
+                '<path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></svg>';
+        }
+        return '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+            '<path d="M12 3v3M7 9h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3Z"/>' +
+            '<path d="M8.5 15h.01M15.5 15h.01M9 6h6"/></svg>';
+    }
+
     function appendMessage(role, text) {
         const wrapper = document.createElement('div');
         wrapper.className = 'message ' + role;
-        wrapper.innerHTML = '<div class="avatar">' + (role === 'user' ? '👤' : '🤖') + '</div>' +
-            '<div class="message-content">' + (text ? renderMarkdown(text) : '') + '</div>';
+        wrapper.innerHTML = '<div class="avatar">' + avatarMarkup(role) + '</div>' +
+            '<div class="message-body">' +
+            '<div class="message-meta">' + (role === 'user' ? '你' : 'CampusDeal 助手') + '</div>' +
+            '<div class="message-content">' + (text ? renderMarkdown(text) : '') + '</div>' +
+            '</div>';
         $('#chat-messages').appendChild(wrapper);
         scrollToBottom();
         return wrapper;
+    }
+
+    function showWelcomeMessage(text) {
+        appendMessage('assistant', text);
+        const prompts = document.createElement('div');
+        prompts.className = 'quick-prompts';
+        prompts.setAttribute('aria-label', '快捷问题');
+        [
+            '帮我看看最近有什么优惠',
+            '查询我的订单进度',
+            '推荐附近评分高的商户'
+        ].forEach(function (prompt) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'quick-prompt';
+            button.textContent = prompt;
+            button.addEventListener('click', function () {
+                const input = $('#chat-input');
+                input.value = prompt;
+                resizeComposer(input);
+                input.focus();
+            });
+            prompts.appendChild(button);
+        });
+        $('#chat-messages').appendChild(prompts);
+        scrollToBottom();
     }
 
     function showThinking(text) {
@@ -163,7 +225,7 @@
             thinkingEl.className = 'thinking-indicator';
             currentContentDiv.appendChild(thinkingEl);
         }
-        thinkingEl.textContent = '💭 ' + text;
+        thinkingEl.textContent = '正在思考 · ' + text;
         scrollToBottom();
     }
 
@@ -202,12 +264,18 @@
 
     function showError(text) {
         clearThinking();
-        appendHtml('<p class="error-text">⚠️ ' + escapeHtml(text) + '</p>');
+        if (currentContentDiv) {
+            appendHtml('<p class="error-text">' + escapeHtml(text) + '</p>');
+        } else {
+            setLoginMsg(text, true);
+        }
     }
 
     function setBusy(b) {
         busy = b;
         $('#send-btn').disabled = b;
+        $('#chat-input').disabled = b;
+        $('#chat-messages').setAttribute('aria-busy', String(b));
     }
 
     // ======================= 操作确认 =======================
@@ -216,8 +284,10 @@
         const overlay = document.createElement('div');
         overlay.className = 'confirm-overlay';
         overlay.innerHTML =
-            '<div class="confirm-dialog">' +
-            '<p>⚠️ ' + escapeHtml(decision.message || '请确认是否继续此操作') + '</p>' +
+            '<div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">' +
+            '<span class="confirm-symbol" aria-hidden="true">!</span>' +
+            '<h3 id="confirm-dialog-title">确认敏感操作</h3>' +
+            '<p>' + escapeHtml(decision.message || '请确认是否继续此操作') + '</p>' +
             '<div class="confirm-actions">' +
             '<button class="btn-confirm">确认</button>' +
             '<button class="btn-cancel">取消</button>' +
@@ -233,6 +303,7 @@
             overlay.remove();
             confirmAction(decision.confirmationId, false);
         });
+        overlay.querySelector('.btn-confirm').focus();
     }
 
     async function confirmAction(confirmationId, approved) {
@@ -311,8 +382,10 @@
         }
 
         // 显示用户消息
+        document.querySelectorAll('.quick-prompts').forEach(function (el) { el.remove(); });
         appendMessage('user', message);
         input.value = '';
+        resizeComposer(input);
 
         // 创建 AI 消息容器
         currentAssistantMsg = appendMessage('assistant', '');
@@ -408,19 +481,32 @@
 
     document.addEventListener('DOMContentLoaded', function () {
         const input = $('#chat-input');
+        input.addEventListener('input', function () { resizeComposer(input); });
         input.addEventListener('keydown', function (e) {
-            // Ctrl/Cmd + Enter 发送
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            // Enter 发送，Shift + Enter 换行；输入法组合期间不处理。
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
                 e.preventDefault();
                 sendMessage();
             }
         });
+        $('#login-phone').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                $('#login-code').focus();
+            }
+        });
+        $('#login-code').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.isComposing) {
+                e.preventDefault();
+                doLogin();
+            }
+        });
+        resizeComposer(input);
         if (!getToken()) {
-            $('#session-badge').textContent = '未登录';
             showLoginPanel();
         } else {
             hideLoginPanel();
-            appendMessage('assistant', '您好！我是 CampusDeal 智能助手，可以帮您查询订单、浏览优惠券、查找商户等。');
+            showWelcomeMessage('你好！我是 CampusDeal 智能助手，可以帮你查订单、找商户，也可以看看最近的优惠活动。');
         }
     });
 
