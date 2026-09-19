@@ -1,0 +1,70 @@
+services:
+  mysql:
+    image: mysql:8.0.33
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-campusdeal}
+      MYSQL_USER: ${MYSQL_USER:-campusdeal}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-campusdeal_dev}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-campusdeal_root_dev}
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  redis:
+    image: redis:7.2-alpine
+    environment:
+      REDIS_PASSWORD: ${CAMPUSDEAL_REDIS_PASSWORD:-campusdeal_dev}
+    ports:
+      - "6379:6379"
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - redis-data:/data
+
+  app:
+    build:
+      context: .
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      CAMPUSDEAL_DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-campusdeal}?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true
+      CAMPUSDEAL_DB_USERNAME: ${MYSQL_USER:-campusdeal}
+      CAMPUSDEAL_DB_PASSWORD: ${MYSQL_PASSWORD:-campusdeal_dev}
+      CAMPUSDEAL_REDIS_HOST: redis
+      CAMPUSDEAL_REDIS_PORT: 6379
+      CAMPUSDEAL_REDIS_PASSWORD: ${CAMPUSDEAL_REDIS_PASSWORD:-campusdeal_dev}
+      CAMPUSDEAL_FLYWAY_ENABLED: "true"
+      CAMPUSDEAL_UPLOAD_ROOT: /app/data/uploads
+      CAMPUSDEAL_AGENT_ENABLED: ${CAMPUSDEAL_AGENT_ENABLED:-false}
+      CAMPUSDEAL_DEEPSEEK_API_KEY: ${CAMPUSDEAL_DEEPSEEK_API_KEY:-}
+      CAMPUSDEAL_KAFKA_ENABLED: "false"
+      CAMPUSDEAL_CANAL_ENABLED: "false"
+      CAMPUSDEAL_PGVECTOR_ENABLED: "false"
+      CAMPUSDEAL_NEO4J_ENABLED: "false"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    volumes:
+      - uploads:/app/data/uploads
+
+volumes:
+  mysql-data:
+  redis-data:
+  uploads:

@@ -40,6 +40,7 @@ dump.rdb
 logs/
 
 ### 本地敏感配置（API Key 等） ###
+.env
 src/main/resources/application-local.yaml
 
 ### 压测 token 池（含有效登录凭证，运行时产物，勿提交） ###

@@ -1,165 +1,184 @@
 # CampusDeal · 校园生活服务平台
 
-校园 O2O 平台：**商户发现 / 优惠券闪购 / 社交内容 / AI 智能客服**。面向高校场景，围绕「附近商户 + 限时秒杀 + 种草社区 + 智能助手」四大业务，覆盖从高并发秒杀到 LLM Agent 的完整技术栈。
+[![CI](https://github.com/senyuLian/campusdeal/actions/workflows/ci.yml/badge.svg)](https://github.com/senyuLian/campusdeal/actions/workflows/ci.yml)
+[![Java 17](https://img.shields.io/badge/Java-17-007396?logo=openjdk)](https://openjdk.org/projects/jdk/17/)
+[![Spring Boot 3.1](https://img.shields.io/badge/Spring%20Boot-3.1.10-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> 项目由 Spring Boot 3.1.10 + Redis + DeepSeek 驱动，含 Phase 2 多级缓存秒杀与 Phase 3 AI Agent / RAG。
+CampusDeal 是一个面向高校场景的 O2O 平台，覆盖商户发现、优惠券闪购、校园社交和 AI 智能客服。项目重点解决高并发秒杀中的可靠受理与最终一致性、Redis 缓存一致性、Agent 会话与输出安全，以及 BM25/PGVector 混合检索问题。
 
----
+> 这是本人独立完成的个人项目；产品设计、系统架构、后端实现、AI 能力接入、测试、性能验证和运维文档均由本人负责。
 
-## 核心特性
+![CampusDeal 智能助手登录界面](doc/images/campusdeal-chat-login.png)
 
-| 模块 | 能力 |
+## 核心能力
+
+| 模块 | 实现 |
 |---|---|
-| 商户 | 分类浏览、关键字搜索、GEO 附近商户（Redis GEO）、逻辑过期缓存防击穿 |
-| 优惠券 | 普通券 / 闪购券，优惠券列表与领取 |
-| 秒杀 | 默认走 MySQL 可恢复订单意图 + Redis 预占，Kafka/Outbox 异步完成订单；旧 Redis Lua 路径可通过开关回退 |
-| 社交 | 帖子发布、点赞（Redis ZSet）、关注、共同关注、滚动分页 Feed |
-| AI 客服 | LangGraph4j ReAct 智能体、6 个函数调用工具（查单/退款/商户/优惠券/FAQ/知识图谱）、SSE 流式输出 |
-| RAG | BM25（内存）+ 向量（PGVector 可选）RRF 混合检索；知识图谱（Neo4j 可选）作为独立检索工具 |
-| 安全 | 输入清洗（Prompt 注入 / SQL 注入）、PII 脱敏三模式、敏感操作二次确认、限流 |
+| 商户与缓存 | Redis GEO、Caffeine + Redis 多级缓存、逻辑过期、空值缓存、事务提交后失效 |
+| 秒杀与订单 | MySQL 条件扣减、Redis 临时预占、订单意图、Outbox、Kafka 重试/DLT、故障恢复与对账 |
+| 社交 | 帖子、持久化点赞/关注关系、幂等写入、复合游标 Feed、计数与 Redis 镜像修复 |
+| AI Agent | LangGraph4j ReAct、6 个业务工具、SSE、安全确认、会话隔离、超时与断开取消 |
+| RAG | 规范化 passage、BM25 + 可选 PGVector、RRF 融合、文档多样性与降级运行 |
+| 安全与运维 | 服务层鉴权、DTO 校验、OTP 原子消费、敏感日志脱敏、Actuator 健康与可靠性指标 |
 
----
+## 系统架构
+
+```mermaid
+flowchart LR
+    Client[Web / API Client] --> API[Spring Boot API]
+
+    subgraph Application[CampusDeal Application]
+        API --> Auth[Authentication & Authorization]
+        Auth --> Domain[Merchant / Coupon / Social Services]
+        Auth --> Flash[Flash Deal Service]
+        Auth --> Agent[LangGraph4j Agent]
+
+        Domain --> Cache[Cache Client]
+        Flash --> Intent[Order Intent + Outbox]
+        Agent --> Guard[Input / Output Safety]
+        Guard --> Tools[Business Tools]
+        Guard --> Retrieval[Hybrid Retriever]
+    end
+
+    Cache --> Caffeine[(Caffeine L1)]
+    Cache --> Redis[(Redis)]
+    Domain --> MySQL[(MySQL)]
+    Intent --> MySQL
+    Intent --> Kafka[(Kafka, optional)]
+    Kafka --> Consumer[Idempotent Consumer]
+    Consumer --> MySQL
+    Retrieval --> BM25[(BM25)]
+    Retrieval -. optional .-> PGVector[(PGVector)]
+    Tools -. optional .-> Neo4j[(Neo4j)]
+    Agent -. optional .-> DeepSeek[DeepSeek API]
+```
+
+秒杀请求只有在 MySQL 事务提交订单意图和 Outbox 后才返回“已受理”。Kafka 不可用时，Outbox 和恢复调度器继续推进订单；Redis 状态丢失时，以数据库库存、订单意图和已完成订单重建准入状态。
 
 ## 技术栈
 
-- **Java 17 · Spring Boot 3.1.10**（jakarta namespace）
-- **MyBatis-Plus 3.5.5**（spring-boot3-starter）· **MySQL 8.0.33**
-- **Redis**：Spring Data Redis（Lettuce 共享连接）+ **Redisson 3.23.5**（分布式锁）
-- **Hutool 5.7.17** · Lombok · commons-pool2 · Actuator
-- **LLM**：DeepSeek API（LangChain4j）
-- **Agent**：LangGraph4j（ReAct 状态图）
-- **消息**：Kafka（可选；broker 不可用或关闭时由 Outbox/意图恢复调度器补偿）
-
----
-
-## 项目结构
-
-```
-src/main/java/com/campusdeal
-├── CampusDealApplication.java   # 入口：@MapperScan + @EnableAspectJAutoProxy(exposeProxy=true)
-├── controller/   PostController, MerchantController, CouponController, UserController ...
-├── dto/          Result, LoginFormDTO, UserDTO, ScrollResult
-├── entity/       Post, Merchant, Coupon, FlashDeal, CouponOrder, User ...
-├── mapper/       MyBatis-Plus BaseMapper
-├── service/      IService 接口 + impl（ServiceImpl<Mapper, Entity>）
-├── config/       MvcConfig, MybatisConfig, RedissonConfig, RedisConfig, WebExceptionAdvice
-├── agent/        AI 客服：LangGraph4j 状态图、6 工具、SSE、会话压缩、安全护栏
-├── rag/          RAG：BM25 索引、向量检索、知识图谱、RRF 混合检索
-├── cache/        布隆过滤器、Caffeine L1 配置、缓存属性
-├── canal/        Canal 监听 Binlog → 缓存失效
-├── mq/           FlashDealProducer / FlashDealConsumer（批量消费）/ OutboxScheduler 补偿
-├── seckill/      FlashDealContext / Result、LuaScriptConfig、RedissonLockHelper
-├── security/     输入清洗、PII 脱敏、敏感门禁、限流
-└── utils/        CacheClient, RedisIdWorker, UserHolder, RedisConstants ...
-```
-
----
+- Java 17、Spring Boot 3.1.10、MyBatis-Plus、MySQL 8
+- Redis、Redisson、Caffeine、Lua
+- Kafka、Outbox、Canal（可选）
+- LangGraph4j、LangChain4j、DeepSeek API
+- BM25、PGVector（可选）、Neo4j（可选）
+- Flyway、Micrometer、Actuator、JUnit 5、Testcontainers
 
 ## 快速开始
 
-### 环境要求
-
-| 依赖 | 版本/位置 |
-|---|---|
-| JDK | **Java 17**（注意：系统默认 JDK 25 会破坏 Lombok，必须切 JDK 17） |
-| MySQL | `CAMPUSDEAL_DB_URL` / `CAMPUSDEAL_DB_USERNAME` / `CAMPUSDEAL_DB_PASSWORD` |
-| Redis | `CAMPUSDEAL_REDIS_HOST` / `CAMPUSDEAL_REDIS_PORT` / `CAMPUSDEAL_REDIS_PASSWORD` |
-| Kafka | `CAMPUSDEAL_KAFKA_BOOTSTRAP_SERVERS`（通过 `CAMPUSDEAL_KAFKA_ENABLED` 开启） |
-| DeepSeek | API Key（环境变量 `CAMPUSDEAL_DEEPSEEK_API_KEY` 或未提交的 `application-local.yaml`） |
-
-> Canal / PGVector / Neo4j 均为可选组件：未部署时应用正常启动，对应能力（缓存失效 / 向量检索 / 知识图谱）自动降级。
-
-### 构建与运行
+推荐使用 Docker Compose。基础环境只启动应用、MySQL 和 Redis；Kafka、Canal、PGVector、Neo4j 与 DeepSeek 默认关闭，不影响核心业务启动。
 
 ```bash
-export JAVA_HOME="<path-to-jdk17>"
-mvn compile
-mvn spring-boot:run
+git clone https://github.com/senyuLian/campusdeal.git
+cd campusdeal
+cp .env.example .env
+docker compose up --build
 ```
 
-默认端口 **8081**。本地开发配置（含 DeepSeek Key 等敏感项）放 `application-local.yaml`，已 gitignore，不会提交。
+Windows PowerShell 使用：
 
-### 数据库
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
 
-`src/main/resources/db/campusdeal.sql` 为基础数据脚本；启动时 `FlashDealServiceImpl` 自动预热未过期秒杀活动的剩余库存到 Redis。
+启动完成后访问：
 
-### 前端静态资源
+- 智能助手页面：<http://localhost:8081/chat.html>
+- 健康检查：<http://localhost:8081/actuator/health>
 
-图片上传目录由 `CAMPUSDEAL_UPLOAD_ROOT` 配置（默认 `./data/uploads`）。上传返回资源 ID，删除使用受保护的 `POST /upload/delete`。
+停止并保留数据：`docker compose down`。删除本地容器数据：`docker compose down -v`。
 
----
+### 本地 Maven 运行
+
+1. 使用 JDK 17。
+2. 启动 MySQL 8 和 Redis。
+3. 复制 `.env.example` 中的变量到当前终端或 IDE Run Configuration。
+4. 将 `CAMPUSDEAL_FLYWAY_ENABLED` 设为 `true`，由 Flyway 初始化空数据库。
+5. 执行 `mvn spring-boot:run`。
+
+`src/main/resources/db/campusdeal.sql` 保留为演示数据快照；新环境的结构初始化以 `src/main/resources/db/migration/` 中的 Flyway 迁移为准。
+
+### 关键环境变量
+
+| 变量 | 用途 | 基础环境是否必需 |
+|---|---|---|
+| `CAMPUSDEAL_DB_URL` | MySQL JDBC URL | 是 |
+| `CAMPUSDEAL_DB_USERNAME` / `CAMPUSDEAL_DB_PASSWORD` | MySQL 凭据 | 是 |
+| `CAMPUSDEAL_REDIS_HOST` / `CAMPUSDEAL_REDIS_PASSWORD` | Redis 连接 | 是 |
+| `CAMPUSDEAL_FLYWAY_ENABLED` | 启用数据库迁移 | 推荐 |
+| `CAMPUSDEAL_KAFKA_ENABLED` | 启用 Kafka 生产、消费与 DLT | 否 |
+| `CAMPUSDEAL_DEEPSEEK_API_KEY` | 启用真实 Agent 模型调用 | 否 |
+| `CAMPUSDEAL_PGVECTOR_ENABLED` | 启用向量检索 | 否 |
+| `CAMPUSDEAL_NEO4J_ENABLED` | 启用知识图谱工具 | 否 |
+
+完整示例见 [.env.example](.env.example)；生产环境会校验已启用集成所需的配置，但不会打印配置值。
 
 ## 主要接口
 
 | 模块 | 路径 | 说明 |
 |---|---|---|
-| 用户 | `/user/code` `/user/login` `/user/me` `/user/logout` `/user/public/{id}` | 手机号验证码登录，Redis Token；公开主页 |
-| 商户 | `/merchant/**` `/merchant-type/**` `/merchant/list/by-type` | 详情/列表/关键字/GEO 附近 |
-| 优惠券 | `/coupon/**` | 列表、领取、我的券 |
-| 秒杀 | `/coupon-order/seckill/{dealId}` / `/coupon-order/{orderId}` | 受理并查询订单状态；返回字符串 orderId 防 JS 精度丢失 |
-| 帖子 | `/post/**` `/follow/**` | 发布、点赞、关注、滚动分页 |
-| 签到 | `/user/sign` | 按月签到 + 连续天数 |
-| AI 客服 | `/agent/chat`（SSE）`/agent/confirm` `/agent/history/{id}` | 流式对话、敏感操作确认 |
-| 上传 | `/upload/post` / `/upload/delete` | 登录后上传与按资源 ID 删除 |
+| 用户 | `/user/code`、`/user/login`、`/user/me` | 验证码登录与 Redis Token |
+| 商户 | `/merchant/**`、`/merchant-type/**` | 详情、检索与 GEO 附近商户 |
+| 优惠券 | `/coupon/**` | 普通券与闪购券 |
+| 秒杀 | `/coupon-order/seckill/{dealId}` | 返回字符串订单 ID 与受理状态 |
+| 订单 | `/coupon-order/{orderId}` | 查询 `ACCEPTED/PROCESSING/SUCCEEDED/FAILED` |
+| 社交 | `/post/**`、`/follow/**` | 发布、点赞、关注与 Feed |
+| Agent | `/agent/chat`、`/agent/confirm` | SSE 对话与敏感操作确认 |
+| 上传 | `/upload/post`、`/upload/delete` | 内容检测、资源归属与安全删除 |
 
 SSE 事件协议：`thinking / tool_call / tool_result / confirm / chunk / done / error`。
 
----
+## 测试状态
 
-## 测试
+当前主分支的可重复验证口径如下：
 
-测试报告见 `doc/test-reports/`（00 基线 ~ 13 修复回归），覆盖缓存 / 秒杀 / 一致性 / Agent / RAG / 安全 / 性能 / 回归全链路：
+| 门禁 | 最近结果 | 说明 |
+|---|---|---|
+| `mvn -B test` | 246/246 通过 | 不依赖外部服务 |
+| `mvn -B verify` | BUILD SUCCESS | 默认执行单元测试；4 个外部集成用例未启用时会跳过 |
+| OpenSpec 严格校验 | 通过 | 51/64 项具有实现与本地证据 |
+| 外部集成门禁 | 待执行 | 需要 Docker/真实 MySQL、Redis、Kafka、PostgreSQL |
 
-```text
-doc/test-reports/    测试报告：00 基线 ~ 13 修复回归
-doc/final-plan.md    顶层规划（项目概览 / 架构 / Phase 划分 / 技术决策）
-tools/               运行时回归脚本（api-smoke / concurrency / perf / throughput / security ...）
+启用外部集成测试：
+
+```bash
+CAMPUSDEAL_RUN_INTEGRATION=true mvn -B verify
 ```
 
-- 单元测试：`mvn test`（当前 **246/246 全绿**，JDK17）
-- 运行时回归：`node tools/<script>.js`（接口契约 40+、秒杀并发无超卖、安全护栏、RAG 降级、秒杀吞吐等）
+历史运行时压测曾取得秒杀成功路径 P99 54 ms、商户缓存 P99 4 ms、峰值生产约 1374 TPS、消费者约 1200 TPS。这些结果属于特定本机环境的历史基准，不替代当前提交的外部集成门禁。测试证据和适用边界见 [测试报告](doc/test-reports/README.md)。
 
-### 核心测试指标
+## 设计取舍与当前边界
 
-| 维度 | 指标 | 实测值 | 阈值 / 结论 |
-|---|---|---|---|
-| 秒杀 | 成功路径 P99 | **54ms** | <150ms ✅ |
-| 秒杀 | 分层耗时（Bloom / Caffeine / Lua / 总计） | 17–191μs / 5–6μs / 5.7–8.9ms / 17–24ms | — |
-| 秒杀 | 30 并发抢 10 库存 | 恰 10 成功、0 超卖、0 重复、DB 增量=10 | 100% 正确 ✅ |
-| 秒杀 | 库存耗尽后秒杀层 Redis 命中 | **0 次**（L1 负缓存，MONITOR 验证） | 快速失败 ✅ |
-| 缓存 | 商户详情缓存 P99（2000 次 GET） | **4ms**（DB 0 查询） | <5ms ✅ |
-| 缓存 | 布隆拦截非法秒杀请求 | **13ms**（未触 Redis/DB） | — |
-| Agent | 首 token（TTFT） | **1494ms** | <2s ✅ |
-| Agent | SSE 流式吞吐 | **25.4–28.5 字/s** | >20 字/s ✅ |
-| RAG | 首 chunk（含 LLM 往返） | **2581ms** | <4s ✅ |
-| 异步落库 | 100 并发 / 库存 10000 压测 | 落库增量 = 成功下单数（两次复跑一致） | 不丢单 ✅ |
-| 异步落库 | 峰值生产 TPS / 消费者吞吐 | **1374 / ~1200** | 消费者非瓶颈 ✅ |
-| 异步落库 | 消费批次数 / 平均每批 | **7418→57**（130×↓）/ 1.3→175 条 | 批量聚合 ✅ |
-| 安全 | Prompt/SQL 注入拦截 · 限流 · PII 三模式 · 敏感操作二次确认 | 单元 42/42 + 运行时 6/6 | 全通过 ✅ |
-| 规模 | 全量回归运行时脚本 | **13 脚本 143/144**（1 项为 auth 拦截器环境级下限） | 发布门禁 8/8 ✅ |
+- 本地验证码为模拟短信，生产接入需替换为真实短信供应商。
+- Kafka、Canal、PGVector、Neo4j 和模型调用采用显式开关；基础模式可以独立运行。
+- 目前 246 个单元测试已通过；最新外部集成门禁尚未在本机执行，因此相关 OpenSpec 项保持未完成。
+- 旧同步秒杀路径仅作为受控回退，默认使用可恢复订单意图链路。
 
----
+## 项目结构
 
-## 安全设计
-
-- **登录鉴权**：`RefreshTokenInterceptor` 滑动续期 + `LoginInterceptor` 401 拦截
-- **输入清洗**：Prompt 注入 / SQL 注入检测（灵敏度可配 `injection-sensitivity`）
-- **PII 脱敏**：`MASK / REMOVE / PASS` 三模式
-- **敏感操作**：退款等工具二次确认（60s 超时 + 归属校验）
-- **限流**：令牌桶（`rate-limit-per-minute` 可配）
-- **幻觉检测**：`hallucination-check` 输出校验
-- **越权防护**：Agent 会话、上传资源、商户/优惠券写操作都在服务层再次校验用户归属
-
----
+```text
+src/main/java/com/campusdeal
+├── controller/     HTTP/SSE 接口
+├── service/        业务服务、订单意图、DLT 重放
+├── mq/             Kafka、Outbox、故障恢复与对账
+├── cache/          Bloom Filter 与本地缓存
+├── canal/          Binlog 事件与缓存失效
+├── agent/          LangGraph4j Agent、会话与工具注册
+├── rag/            文档、BM25、PGVector、RRF 与重建
+├── security/       权限、输入输出安全、确认与脱敏
+└── config/         Spring、健康检查与可靠性指标
+```
 
 ## 文档
 
-- `CLAUDE.md` — 项目开发约定（结构、Redis Key 规范、构建注意）
-- `doc/final-plan.md` — 顶层规划文档
-- `doc/test-reports/` — 测试执行报告（00 基线 ~ 13 修复回归）
-
----
+- [架构与实现方案](doc/final-plan.md)
+- [安全与可靠性审查整改记录](doc/project-review-2026-09-19.md)
+- [当前修复回归报告](doc/test-reports/13-remediation.md)
+- [可靠性运行手册](doc/runbooks/reliability.md)
+- [OpenSpec 任务清单](openspec/changes/remediate-project-review-findings/tasks.md)
 
 ## License
 
-Internal / educational use.
+[MIT](LICENSE) © 2026 senyuLian

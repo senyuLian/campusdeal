@@ -1,5 +1,7 @@
 # Tasks
 
+> Status: 51/64 items have implementation and local evidence. Most unchecked items require Docker/real MySQL, Redis, Kafka, PostgreSQL, PGVector, symlink-capable filesystem, or staging verification. An unchecked verification item does not necessarily mean its implementation is absent.
+
 ## 1. Build and Migration Foundations
 
 - [x] 1.1 Add Jakarta Validation, Flyway, PostgreSQL, Micrometer, and Testcontainers dependencies with compatible versions, and verify the application compiles plus the dependency tree contains one intended version of each library

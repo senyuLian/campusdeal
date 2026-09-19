@@ -1,0 +1,15 @@
+.git
+.github
+.agents
+.idea
+.vscode
+target
+data
+logs
+backup
+doc
+openspec
+tools
+.env
+src/main/resources/application-local.yaml
+*.log

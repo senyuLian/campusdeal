@@ -1,5 +1,7 @@
 # 测试报告 11 · 全量回归 + 发布门禁检查
 
+> 历史快照：本文记录 2026-08-15 当时版本和环境的运行结果，不代表当前 `main` 的发布门禁。当前验证口径以 [13-remediation.md](13-remediation.md) 为准。
+>
 > 日期：2026-08-15 ｜ 依据：`doc/test-plan/11-regression-release.md`
 > 环境：MySQL :3306 ✅、Redis :6379 ✅、后端 :8081 ✅（JDK17）、DeepSeek Key ✅
 
